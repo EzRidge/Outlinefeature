@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs and databases
+*.log
+*.sqlite
+
+# Project specific
+data/raw/*
+data/processed/*
+data/output/*
+models/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/output/.gitkeep
+!models/.gitkeep
