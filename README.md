@@ -1,115 +1,145 @@
-# Roof Feature Detection and Measurement
+# Hybrid Roof Feature Detection
 
-This project implements automatic roof feature detection and measurement from aerial imagery, based on the Roofline-Extraction paper and RID (Roof Information Dataset). It uses deep learning to detect and segment roof outlines, ridge lines, and eave lines, enabling accurate roof measurements.
+A hybrid approach combining RID's segmentation capabilities with Roofline-Extraction's feature detection for automatic roof analysis from aerial imagery.
 
 ## Features
 
-- Automatic detection of roof outlines, ridge lines, and eave lines
-- Accurate measurement of roof area, perimeter, and pitch
-- Support for processing single images or entire directories
-- Detailed output including segmentation masks and measurements
-- Command-line interface for dataset preparation, training, and inference
+- Automatic detection of roof features:
+  - Complete roof outlines
+  - Ridge lines
+  - Hip lines
+  - Valley lines
+- Multi-scale feature detection
+- Geometric constraint enforcement
+- Support for both RID and Roofline-Extraction datasets
+- Detailed measurements and visualizations
+
+## Project Structure
+
+```
+.
+├── data/
+│   ├── processed/    # Processed training data
+│   ├── raw/         # Raw dataset files
+│   └── output/      # Model outputs and visualizations
+├── models/          # Saved model weights
+├── src/
+│   ├── config.py    # Configuration settings
+│   ├── models.py    # Model architecture
+│   ├── utils.py     # Utility functions
+│   ├── prepare_data.py  # Dataset preparation
+│   ├── train.py     # Training script
+│   ├── quick_test.py    # Testing script
+│   └── main.py      # Main CLI interface
+├── requirements.txt  # Python dependencies
+└── README.md        # This file
+```
 
 ## Installation
 
-1. Clone the repository:
-```bash
-git clone [repository-url]
-cd [repository-name]
-```
-
-2. Create and activate a virtual environment:
+1. Create a virtual environment:
 ```bash
 python -m venv venv
-# On Windows:
-venv\Scripts\activate
-# On Unix/MacOS:
-source venv/bin/activate
+source venv/bin/activate  # Linux/Mac
+venv\Scripts\activate     # Windows
 ```
 
-3. Install dependencies:
+2. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-## Usage
-
-The project provides three main commands: prepare, train, and predict.
-
-### Preparing the Dataset
-
-To prepare the RID dataset for training:
-
+3. For Windows users, install GDAL and other geospatial packages from wheel files:
 ```bash
-python -m src.main prepare /path/to/rid/dataset /path/to/output --split 0.8 --verify
+# Download appropriate wheel files for your Python version
+pip install <path_to_wheel>/GDAL‐<version>‐cp39‐cp39‐win_amd64.whl
+pip install <path_to_wheel>/Fiona‐<version>‐cp39‐cp39‐win_amd64.whl
+pip install <path_to_wheel>/Shapely‐<version>‐cp39‐cp39‐win_amd64.whl
 ```
 
-Options:
-- `--split`: Train/validation split ratio (default: 0.8)
-- `--verify`: Verify the prepared dataset
+## Dataset Preparation
 
-### Training the Model
+The system supports both RID and Roofline-Extraction datasets:
 
-To train the model:
-
+1. Prepare Roofline-Extraction dataset:
 ```bash
-python -m src.main train /path/to/images /path/to/masks --epochs 50 --batch-size 8 --learning-rate 1e-4 --device cuda
+python -m src.main prepare --roofline path/to/imdb.mat --output data/processed
 ```
 
-Options:
-- `--epochs`: Number of training epochs (default: 50)
-- `--batch-size`: Batch size for training (default: 8)
-- `--learning-rate`: Learning rate (default: 1e-4)
-- `--device`: Device to train on ('cuda' or 'cpu', default: 'cuda')
-
-### Running Inference
-
-To run inference on new images:
-
+2. Prepare RID dataset:
 ```bash
-python -m src.main predict /path/to/model /path/to/input /path/to/output --device cuda
+python -m src.main prepare --rid path/to/rid/dataset --output data/processed
 ```
 
-The input path can be either a single image or a directory. Results will be saved to the specified output directory.
+3. Prepare both datasets:
+```bash
+python -m src.main prepare --roofline path/to/imdb.mat --rid path/to/rid/dataset --output data/processed
+```
+
+## Training
+
+1. Train from scratch:
+```bash
+python -m src.main train --data_dir data/processed
+```
+
+2. Train with pre-trained weights:
+```bash
+python -m src.main train --data_dir data/processed --weights path/to/weights.pth
+```
+
+3. Resume training from checkpoint:
+```bash
+python -m src.main train --data_dir data/processed --resume path/to/checkpoint.pth
+```
+
+4. Train with custom configuration:
+```bash
+python -m src.main train --data_dir data/processed --config path/to/config.yaml
+```
+
+## Testing
+
+1. Test single image:
+```bash
+python -m src.main test path/to/image.jpg --weights models/best_model.pth --output data/output
+```
+
+2. Test directory of images:
+```bash
+python -m src.main test path/to/images/dir --weights models/best_model.pth --output data/output --batch
+```
 
 ## Model Architecture
 
-The model uses a multi-scale CNN architecture based on the Roofline-Extraction paper, with the following key components:
+The hybrid model combines:
+- Multi-scale CNN from Roofline-Extraction for feature detection
+- RID's segmentation approach for accurate boundary detection
+- Custom feature heads for ridge, hip, and valley line detection
+- Geometric constraint enforcement through angle prediction
 
-- Encoder: ResNet-based backbone with multi-scale feature extraction
-- Feature Fusion: Multi-scale feature fusion module
-- Decoder: Upsampling path with skip connections
-- Output: Multi-class segmentation (background, roof outline, ridge lines, eave lines)
+## Results
 
-## Output Format
+The model outputs:
+- Feature masks (outline, ridge, hip, valley)
+- Measurements (areas, lengths)
+- Visualizations with color-coded features
+- Debug information for each detection
 
-The prediction output includes:
+## Contributing
 
-1. Segmentation masks:
-   - `*_roof_mask.png`: Roof outline segmentation
-   - `*_ridge_mask.png`: Ridge line segmentation
-   - `*_eave_mask.png`: Eave line segmentation
-
-2. Measurements (JSON format):
-   - Area (square meters)
-   - Perimeter (meters)
-   - Pitch (degrees)
-   - Number of facets
-   - Contour points
-
-## Requirements
-
-- Python 3.8+
-- PyTorch 1.9+
-- OpenCV 4.5+
-- GDAL 3.3+
-- Other dependencies listed in requirements.txt
-
-## References
-
-1. Roofline-Extraction paper: [https://www.mdpi.com/2072-4292/11/19/2219](https://www.mdpi.com/2072-4292/11/19/2219)
-2. RID Dataset: [https://github.com/TUMFTM/RID](https://github.com/TUMFTM/RID)
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Acknowledgments
+
+- RID (Roof Information Dataset) team for their segmentation approach
+- Roofline-Extraction authors for their feature detection methodology
+- PyTorch and OpenCV communities for their excellent tools

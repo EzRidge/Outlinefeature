@@ -1,111 +1,140 @@
 """
-Main script for roof feature detection and measurement.
+Main script for hybrid roof feature detection system.
+Provides command-line interface for all operations.
 """
 
-import os
+import argparse
 import sys
-import logging
 from pathlib import Path
+from .prepare_data import DatasetPreparator
+from .train import main as train_main
+from .quick_test import process_single_image, process_directory
+from .models import create_model, load_pretrained
+from .config import MODEL_CONFIG, TRAIN_CONFIG
 
-from .prepare_data import prepare_dataset, verify_dataset
-from .train import train_model
-from .predict import main as predict_main
-
-def setup_logging():
-    """Setup logging configuration."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler('roof_detection.log')
-        ]
+def setup_parser():
+    """Setup command line argument parser."""
+    parser = argparse.ArgumentParser(
+        description="Hybrid Roof Feature Detection System",
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    return logging.getLogger(__name__)
+    
+    subparsers = parser.add_subparsers(dest='command', help='Command to execute')
+    
+    # Prepare data command
+    prepare_parser = subparsers.add_parser('prepare', help='Prepare datasets')
+    prepare_parser.add_argument('--roofline', help='Path to Roofline-Extraction imdb.mat file')
+    prepare_parser.add_argument('--rid', help='Path to RID dataset directory')
+    prepare_parser.add_argument('--output', default='data/processed',
+                              help='Output directory for processed dataset')
+    
+    # Train command
+    train_parser = subparsers.add_parser('train', help='Train the model')
+    train_parser.add_argument('--data_dir', default='data/processed',
+                            help='Directory containing processed dataset')
+    train_parser.add_argument('--weights', help='Path to pretrained weights')
+    train_parser.add_argument('--resume', help='Path to checkpoint to resume from')
+    train_parser.add_argument('--config', help='Path to custom configuration file')
+    
+    # Test command
+    test_parser = subparsers.add_parser('test', help='Test the model')
+    test_parser.add_argument('input_path', help='Path to input image or directory')
+    test_parser.add_argument('--weights', required=True,
+                           help='Path to model weights')
+    test_parser.add_argument('--output', help='Path to output directory')
+    test_parser.add_argument('--batch', action='store_true',
+                           help='Process entire directory')
+    
+    return parser
 
 def prepare_command(args):
-    """Handle dataset preparation command."""
-    logger = setup_logging()
-    logger.info('Preparing dataset...')
+    """Handle prepare command."""
+    if not args.roofline and not args.rid:
+        print("Error: Please provide at least one dataset path (--roofline or --rid)")
+        return 1
     
-    prepare_dataset(args.rid_path, args.output_path, args.split)
-    
-    if args.verify:
-        logger.info('Verifying dataset...')
-        verify_dataset(args.output_path)
-    
-    logger.info('Dataset preparation completed')
+    try:
+        preparator = DatasetPreparator(args.output)
+        
+        if args.roofline:
+            preparator.process_roofline_dataset(args.roofline)
+        
+        if args.rid:
+            preparator.process_rid_dataset(args.rid)
+        
+        return 0
+        
+    except Exception as e:
+        print(f"Error preparing datasets: {str(e)}")
+        return 1
 
 def train_command(args):
-    """Handle model training command."""
-    logger = setup_logging()
-    logger.info('Starting model training...')
-    
-    train_model(
-        image_dir=args.image_dir,
-        mask_dir=args.mask_dir,
-        num_epochs=args.epochs,
-        batch_size=args.batch_size,
-        learning_rate=args.learning_rate,
-        device=args.device
-    )
-    
-    logger.info('Training completed')
+    """Handle train command."""
+    try:
+        # Update configuration if custom config provided
+        if args.config:
+            import yaml
+            with open(args.config) as f:
+                custom_config = yaml.safe_load(f)
+                MODEL_CONFIG.update(custom_config.get('model_config', {}))
+                TRAIN_CONFIG.update(custom_config.get('train_config', {}))
+        
+        # Run training
+        return train_main(args)
+        
+    except Exception as e:
+        print(f"Error during training: {str(e)}")
+        return 1
 
-def predict_command(args):
-    """Handle prediction command."""
-    logger = setup_logging()
-    logger.info('Running inference...')
-    
-    predict_main(
-        args.model_path,
-        args.input_path,
-        args.output_dir,
-        args.device
-    )
-    
-    logger.info('Inference completed')
+def test_command(args):
+    """Handle test command."""
+    try:
+        # Create and initialize model
+        print("Initializing model...")
+        model = create_model()
+        
+        if not Path(args.weights).exists():
+            print(f"Error: Weights file not found at {args.weights}")
+            return 1
+        
+        print(f"Loading weights from {args.weights}")
+        model = load_pretrained(model, args.weights)
+        model.eval()
+        
+        # Create output directory
+        output_dir = Path(args.output) if args.output else Path("data/output")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Process input
+        input_path = Path(args.input_path)
+        if args.batch or input_path.is_dir():
+            process_directory(input_path, model, output_dir, args.weights)
+        else:
+            process_single_image(input_path, model, output_dir, args.weights)
+        
+        return 0
+        
+    except Exception as e:
+        print(f"Error during testing: {str(e)}")
+        return 1
 
 def main():
     """Main entry point."""
-    import argparse
-    
-    parser = argparse.ArgumentParser(description='Roof feature detection and measurement')
-    subparsers = parser.add_subparsers(dest='command', help='Command to run')
-    
-    # Dataset preparation command
-    prepare_parser = subparsers.add_parser('prepare', help='Prepare training dataset')
-    prepare_parser.add_argument('rid_path', help='Path to RID dataset')
-    prepare_parser.add_argument('output_path', help='Path to save processed dataset')
-    prepare_parser.add_argument('--split', type=float, default=0.8, help='Train/val split ratio')
-    prepare_parser.add_argument('--verify', action='store_true', help='Verify dataset after preparation')
-    
-    # Training command
-    train_parser = subparsers.add_parser('train', help='Train the model')
-    train_parser.add_argument('image_dir', help='Directory containing training images')
-    train_parser.add_argument('mask_dir', help='Directory containing mask annotations')
-    train_parser.add_argument('--epochs', type=int, default=50, help='Number of epochs')
-    train_parser.add_argument('--batch-size', type=int, default=8, help='Batch size')
-    train_parser.add_argument('--learning-rate', type=float, default=1e-4, help='Learning rate')
-    train_parser.add_argument('--device', default='cuda', help='Device to train on')
-    
-    # Prediction command
-    predict_parser = subparsers.add_parser('predict', help='Run inference')
-    predict_parser.add_argument('model_path', help='Path to trained model checkpoint')
-    predict_parser.add_argument('input_path', help='Path to input image or directory')
-    predict_parser.add_argument('output_dir', help='Directory to save results')
-    predict_parser.add_argument('--device', default='cuda', help='Device to run inference on')
-    
+    parser = setup_parser()
     args = parser.parse_args()
     
-    if args.command == 'prepare':
-        prepare_command(args)
-    elif args.command == 'train':
-        train_command(args)
-    elif args.command == 'predict':
-        predict_command(args)
-    else:
+    if not args.command:
         parser.print_help()
+        return 1
+    
+    # Execute appropriate command
+    command_handlers = {
+        'prepare': prepare_command,
+        'train': train_command,
+        'test': test_command
+    }
+    
+    return command_handlers[args.command](args)
 
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    sys.exit(main())

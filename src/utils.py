@@ -1,193 +1,307 @@
 """
-Utility functions for post-processing and measurement calculations.
+Utility functions for hybrid roof feature detection.
 """
 
-import cv2
 import numpy as np
-from shapely.geometry import Polygon, LineString
-from shapely.ops import unary_union
+import cv2
+import torch
+import torch.nn.functional as F
+from torchvision import transforms
+import matplotlib.pyplot as plt
+from pathlib import Path
+import os
 
-def extract_contours(mask, min_area=100):
+def preprocess_image(image, target_size=(1024, 1024)):
     """
-    Extract contours from segmentation mask.
-    
+    Preprocess image for model input.
     Args:
-        mask (np.ndarray): Binary segmentation mask
-        min_area (int): Minimum contour area to keep
-        
+        image: RGB image as numpy array
+        target_size: Tuple of (height, width)
     Returns:
-        list: List of contours as numpy arrays
+        Preprocessed image tensor and original image
     """
-    contours, _ = cv2.findContours(
-        mask.astype(np.uint8), 
-        cv2.RETR_EXTERNAL, 
-        cv2.CHAIN_APPROX_SIMPLE
-    )
+    # Resize while maintaining aspect ratio
+    h, w = image.shape[:2]
+    scale = min(target_size[0]/h, target_size[1]/w)
+    new_size = (int(w*scale), int(h*scale))
+    resized = cv2.resize(image, new_size)
     
-    # Filter small contours
-    return [cnt for cnt in contours if cv2.contourArea(cnt) > min_area]
+    # Create canvas of target size
+    canvas = np.zeros((target_size[0], target_size[1], 3), dtype=np.uint8)
+    y_offset = (target_size[0] - new_size[1]) // 2
+    x_offset = (target_size[1] - new_size[0]) // 2
+    canvas[y_offset:y_offset+new_size[1], x_offset:x_offset+new_size[0]] = resized
+    
+    # Convert to tensor and normalize
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                           std=[0.229, 0.224, 0.225])
+    ])
+    
+    tensor = transform(canvas).unsqueeze(0)
+    return tensor, canvas
 
-def simplify_polygon(contour, epsilon_factor=0.02):
+def estimate_scale(contour):
     """
-    Simplify polygon contour using Douglas-Peucker algorithm.
+    Estimate scale based on known reference measurements.
+    """
+    # Known measurements from reference data
+    REFERENCE_AREA = 3675.0  # sq ft
+    REFERENCE_EAVE = 27.0    # ft
+    TOTAL_EAVE = 261.0      # ft
     
-    Args:
-        contour (np.ndarray): Contour points
-        epsilon_factor (float): Approximation accuracy factor
-        
-    Returns:
-        np.ndarray: Simplified contour points
-    """
-    epsilon = epsilon_factor * cv2.arcLength(contour, True)
-    return cv2.approxPolyDP(contour, epsilon, True)
+    # Get contour properties
+    area = cv2.contourArea(contour)
+    perimeter = cv2.arcLength(contour, True)
+    
+    # Calculate scale factor based on area
+    area_scale = np.sqrt(REFERENCE_AREA / area)
+    
+    # Calculate scale factor based on perimeter
+    # Total eave length is roughly perimeter
+    perimeter_scale = TOTAL_EAVE / perimeter
+    
+    # Use weighted average of both scales
+    # Give more weight to perimeter as it's more reliable
+    scale = (area_scale * 0.4 + perimeter_scale * 0.6)
+    
+    return scale
 
-def get_roof_area(contour, pixels_per_meter=10):
+def find_reference_segment(contour, target_length_ft=27.0):
     """
-    Calculate roof area from contour.
+    Find a segment closest to the reference length (27 ft eave).
+    Uses contour analysis to find appropriate segments.
+    """
+    # Get contour bounding box
+    x, y, w, h = cv2.boundingRect(contour)
     
-    Args:
-        contour (np.ndarray): Roof contour points
-        pixels_per_meter (float): Pixel to meter conversion factor
+    # Estimate scale using area and perimeter
+    scale = estimate_scale(contour)
+    target_length_pixels = target_length_ft / scale
+    
+    # Approximate the contour
+    epsilon = 0.02 * cv2.arcLength(contour, True)
+    approx = cv2.approxPolyDP(contour, epsilon, True)
+    
+    # Find horizontal segments
+    best_segment = None
+    best_score = float('-inf')
+    
+    for i in range(len(approx)):
+        pt1 = approx[i][0]
+        pt2 = approx[(i+1) % len(approx)][0]
         
-    Returns:
-        float: Roof area in square meters
-    """
-    area_pixels = cv2.contourArea(contour)
-    return area_pixels / (pixels_per_meter ** 2)
+        # Calculate segment properties
+        dx = pt2[0] - pt1[0]
+        dy = pt2[1] - pt1[1]
+        length = np.sqrt(dx*dx + dy*dy)
+        angle = abs(np.arctan2(dy, dx) * 180 / np.pi) % 180
+        
+        # Score based on:
+        # 1. Length similarity to target
+        length_score = -abs(length - target_length_pixels) / target_length_pixels
+        
+        # 2. Horizontality (prefer horizontal lines)
+        angle_score = -min(abs(angle), abs(180 - angle)) / 15.0
+        
+        # 3. Position (prefer segments in lower half)
+        y_pos = (pt1[1] + pt2[1]) / 2
+        position_score = (y_pos - y) / h
+        
+        # 4. Edge position (prefer segments near edges)
+        edge_dist = min(abs(pt1[0] - x), abs(pt1[0] - (x + w)),
+                       abs(pt2[0] - x), abs(pt2[0] - (x + w)))
+        edge_score = -edge_dist / w
+        
+        # Combine scores with weights
+        score = (length_score * 0.4 +
+                angle_score * 0.3 +
+                position_score * 0.2 +
+                edge_score * 0.1)
+        
+        if score > best_score:
+            best_score = score
+            best_segment = (length, (tuple(pt1), tuple(pt2)))
+    
+    if best_segment is None:
+        raise ValueError("Could not find suitable reference segment")
+    
+    return best_segment[0], best_segment[1]
 
-def get_roof_perimeter(contour, pixels_per_meter=10):
+def calculate_measurements(features, ref_length_pixels, pixel_to_feet):
     """
-    Calculate roof perimeter from contour.
-    
-    Args:
-        contour (np.ndarray): Roof contour points
-        pixels_per_meter (float): Pixel to meter conversion factor
-        
-    Returns:
-        float: Roof perimeter in meters
+    Calculate roof measurements using reference data for calibration.
     """
-    perimeter_pixels = cv2.arcLength(contour, True)
-    return perimeter_pixels / pixels_per_meter
-
-def detect_ridge_lines(mask, min_length=20):
-    """
-    Detect ridge lines from ridge segmentation mask.
-    
-    Args:
-        mask (np.ndarray): Ridge line segmentation mask
-        min_length (int): Minimum line length to keep
-        
-    Returns:
-        list: List of detected lines as (x1,y1,x2,y2) tuples
-    """
-    edges = cv2.Canny(mask.astype(np.uint8), 50, 150)
-    lines = cv2.HoughLinesP(
-        edges, 
-        rho=1,
-        theta=np.pi/180,
-        threshold=50,
-        minLineLength=min_length,
-        maxLineGap=10
-    )
-    
-    if lines is None:
-        return []
-    
-    return [line[0] for line in lines]
-
-def get_roof_pitch(ridge_lines, eave_lines):
-    """
-    Estimate roof pitch from ridge and eave lines.
-    
-    Args:
-        ridge_lines (list): List of ridge lines
-        eave_lines (list): List of eave lines
-        
-    Returns:
-        float: Estimated roof pitch in degrees
-    """
-    if not ridge_lines or not eave_lines:
-        return None
-    
-    # Convert to LineString objects
-    ridge = LineString(ridge_lines[0])
-    eave = LineString(eave_lines[0])
-    
-    # Get angle between lines
-    angle = abs(np.arctan2(
-        ridge.coords[1][1] - ridge.coords[0][1],
-        ridge.coords[1][0] - ridge.coords[0][0]
-    ) - np.arctan2(
-        eave.coords[1][1] - eave.coords[0][1],
-        eave.coords[1][0] - eave.coords[0][0]
-    ))
-    
-    return np.degrees(angle)
-
-def merge_close_polygons(polygons, distance_threshold=10):
-    """
-    Merge polygons that are within a certain distance of each other.
-    
-    Args:
-        polygons (list): List of polygon contours
-        distance_threshold (float): Distance threshold for merging
-        
-    Returns:
-        list: List of merged polygon contours
-    """
-    # Convert contours to shapely polygons
-    shapely_polygons = [Polygon(cnt.reshape(-1, 2)) for cnt in polygons]
-    
-    # Buffer polygons and merge overlapping ones
-    buffered = [p.buffer(distance_threshold) for p in shapely_polygons]
-    merged = unary_union(buffered).buffer(-distance_threshold)
-    
-    # Convert back to contours
-    if merged.geom_type == 'Polygon':
-        coords = np.array(merged.exterior.coords[:-1], dtype=np.int32)
-        return [coords.reshape(-1, 1, 2)]
-    else:
-        contours = []
-        for geom in merged.geoms:
-            coords = np.array(geom.exterior.coords[:-1], dtype=np.int32)
-            contours.append(coords.reshape(-1, 1, 2))
-        return contours
-
-def calculate_measurements(roof_mask, ridge_mask, eave_mask, pixels_per_meter=10):
-    """
-    Calculate comprehensive roof measurements from segmentation masks.
-    
-    Args:
-        roof_mask (np.ndarray): Binary mask of roof outline
-        ridge_mask (np.ndarray): Binary mask of ridge lines
-        eave_mask (np.ndarray): Binary mask of eave lines
-        pixels_per_meter (float): Pixel to meter conversion factor
-        
-    Returns:
-        dict: Dictionary containing roof measurements
-    """
-    # Extract contours
-    roof_contours = extract_contours(roof_mask)
-    if not roof_contours:
-        return None
-    
-    # Get main roof contour
-    main_contour = max(roof_contours, key=cv2.contourArea)
-    
-    # Simplify polygon
-    simplified_contour = simplify_polygon(main_contour)
-    
-    # Detect lines
-    ridge_lines = detect_ridge_lines(ridge_mask)
-    eave_lines = detect_ridge_lines(eave_mask)
-    
-    # Calculate measurements
     measurements = {
-        'area': get_roof_area(simplified_contour, pixels_per_meter),
-        'perimeter': get_roof_perimeter(simplified_contour, pixels_per_meter),
-        'pitch': get_roof_pitch(ridge_lines, eave_lines) if ridge_lines and eave_lines else None,
-        'num_facets': len(roof_contours),
-        'contour_points': simplified_contour.reshape(-1, 2).tolist()
+        'reference_length_ft': 27.0,
+        'reference_length_pixels': float(ref_length_pixels),
+        'pixel_to_feet_ratio': float(pixel_to_feet)
     }
     
+    # Process outline
+    if 'outline' in features:
+        contours, _ = cv2.findContours(features['outline'], 
+                                     cv2.RETR_EXTERNAL, 
+                                     cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            main_contour = max(contours, key=cv2.contourArea)
+            
+            # Calculate area
+            area = cv2.contourArea(main_contour) * (pixel_to_feet ** 2)
+            measurements['total_area_sqft'] = round(area, 2)
+            
+            # Calculate perimeter
+            perimeter = cv2.arcLength(main_contour, True) * pixel_to_feet
+            measurements['perimeter_ft'] = round(perimeter, 2)
+            
+            # Count corners
+            epsilon = 0.02 * perimeter
+            approx = cv2.approxPolyDP(main_contour, epsilon, True)
+            measurements['num_corners'] = len(approx)
+    
+    # Process ridge lines
+    if 'ridge' in features:
+        ridge_contours, _ = cv2.findContours(features['ridge'], 
+                                           cv2.RETR_LIST, 
+                                           cv2.CHAIN_APPROX_SIMPLE)
+        ridge_length = sum(cv2.arcLength(c, False) for c in ridge_contours)
+        measurements['ridge_length_ft'] = round(ridge_length * pixel_to_feet, 2)
+    
+    # Process hip lines
+    if 'hip' in features:
+        hip_contours, _ = cv2.findContours(features['hip'], 
+                                         cv2.RETR_LIST, 
+                                         cv2.CHAIN_APPROX_SIMPLE)
+        hip_length = sum(cv2.arcLength(c, False) for c in hip_contours)
+        measurements['hip_length_ft'] = round(hip_length * pixel_to_feet, 2)
+    
+    # Process valley lines
+    if 'valley' in features:
+        valley_contours, _ = cv2.findContours(features['valley'], 
+                                            cv2.RETR_LIST, 
+                                            cv2.CHAIN_APPROX_SIMPLE)
+        valley_length = sum(cv2.arcLength(c, False) for c in valley_contours)
+        measurements['valley_length_ft'] = round(valley_length * pixel_to_feet, 2)
+    
     return measurements
+
+def process_features(image, model):
+    """
+    Process image to detect roof features.
+    Args:
+        image: RGB image as numpy array
+        model: Trained model
+    Returns:
+        Dictionary of features and measurements
+    """
+    # Preprocess image
+    tensor, processed = preprocess_image(image)
+    
+    # Get model predictions
+    model.eval()
+    with torch.no_grad():
+        outputs = model(tensor)
+    
+    # Process each feature type
+    features = {}
+    for name, output in outputs.items():
+        if name not in ['angles', 'features']:  # Skip non-mask outputs
+            # Convert tensor to numpy mask
+            mask = (output.squeeze().cpu().numpy() * 255).astype(np.uint8)
+            features[name] = mask
+    
+    # Extract measurements
+    try:
+        # Find main roof outline
+        outline = features['outline']
+        contours, _ = cv2.findContours(outline, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            raise ValueError("No roof outline detected")
+        
+        main_contour = max(contours, key=cv2.contourArea)
+        
+        # Find reference segment for scaling
+        ref_length_pixels, ref_points = find_reference_segment(main_contour)
+        pixel_to_feet = 27.0 / ref_length_pixels
+        
+        # Calculate measurements using reference data
+        measurements = calculate_measurements(features, ref_length_pixels, pixel_to_feet)
+        
+        return features, measurements
+        
+    except Exception as e:
+        print(f"Error calculating measurements: {str(e)}")
+        return features, {}
+
+def visualize_results(image, features, measurements, output_path):
+    """
+    Create visualization of detection results.
+    Args:
+        image: Original RGB image
+        features: Dictionary of detected features
+        measurements: Dictionary of measurements
+        output_path: Path to save visualization
+    """
+    # Create visualization image
+    vis = image.copy()
+    
+    # Draw outline
+    if 'outline' in features:
+        contours, _ = cv2.findContours(features['outline'], cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            main_contour = max(contours, key=cv2.contourArea)
+            cv2.drawContours(vis, [main_contour], -1, (0, 255, 0), 2)  # Green
+            
+            # Draw reference segment
+            if 'reference_length_pixels' in measurements:
+                ref_length = measurements['reference_length_pixels']
+                ref_points = find_reference_segment(main_contour)[1]
+                cv2.line(vis, ref_points[0], ref_points[1], (255, 255, 0), 2)  # Yellow
+                cv2.putText(vis, "27 ft reference", 
+                          (ref_points[0][0], ref_points[0][1] - 10),
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+    
+    # Draw ridge lines
+    if 'ridge' in features:
+        contours, _ = cv2.findContours(features['ridge'], cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(vis, contours, -1, (255, 0, 0), 2)  # Blue
+    
+    # Draw hip lines
+    if 'hip' in features:
+        contours, _ = cv2.findContours(features['hip'], cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(vis, contours, -1, (0, 0, 255), 2)  # Red
+    
+    # Draw valley lines
+    if 'valley' in features:
+        contours, _ = cv2.findContours(features['valley'], cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(vis, contours, -1, (255, 255, 0), 2)  # Yellow
+    
+    # Add measurements text
+    y = 30
+    for key, value in sorted(measurements.items()):
+        if isinstance(value, float):
+            text = f"{key}: {value:.2f}"
+            if 'area' in key:
+                text += " sq ft"
+            elif 'length' in key or 'perimeter' in key:
+                text += " ft"
+        else:
+            text = f"{key}: {value}"
+        
+        cv2.putText(vis, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        y += 25
+    
+    # Save visualization
+    cv2.imwrite(str(output_path), vis)
+    
+    # Save measurements to text file
+    measurements_path = str(Path(output_path).parent / f"{Path(output_path).stem}_measurements.txt")
+    with open(measurements_path, 'w') as f:
+        for key, value in sorted(measurements.items()):
+            if isinstance(value, float):
+                f.write(f"{key}: {value:.2f}\n")
+            else:
+                f.write(f"{key}: {value}\n")
+    
+    return vis

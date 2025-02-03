@@ -1,167 +1,210 @@
 """
-Script to prepare training data from the RID (Roof Information Dataset).
+Dataset preparation script that handles both RID and Roofline-Extraction datasets.
 """
 
 import os
-import shutil
-from pathlib import Path
-import cv2
 import numpy as np
+import cv2
+import torch
+from pathlib import Path
 from tqdm import tqdm
+import h5py
+import scipy.io as sio
+from .config import DATASET_CONFIG
 
-def create_mask_from_annotations(image_size, annotations, class_mapping):
-    """
-    Create segmentation mask from RID annotations.
-    
-    Args:
-        image_size (tuple): Size of the image (height, width)
-        annotations (dict): Dictionary containing annotations
-        class_mapping (dict): Mapping from annotation classes to mask values
+class DatasetPreparator:
+    def __init__(self, output_dir):
+        """
+        Initialize dataset preparator.
+        Args:
+            output_dir: Directory to save processed dataset
+        """
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         
-    Returns:
-        np.ndarray: Segmentation mask
-    """
-    mask = np.zeros(image_size, dtype=np.uint8)
+        # Create subdirectories
+        self.train_dir = self.output_dir / "train"
+        self.val_dir = self.output_dir / "val"
+        self.test_dir = self.output_dir / "test"
+        
+        for dir_path in [self.train_dir, self.val_dir, self.test_dir]:
+            dir_path.mkdir(exist_ok=True)
+            (dir_path / "images").mkdir(exist_ok=True)
+            (dir_path / "masks").mkdir(exist_ok=True)
     
-    # Draw each annotation onto the mask
-    for annotation in annotations:
-        class_name = annotation['class']
-        if class_name in class_mapping:
-            points = np.array(annotation['points'], dtype=np.int32)
-            cv2.fillPoly(mask, [points], class_mapping[class_name])
+    def process_roofline_dataset(self, matlab_path):
+        """
+        Process Roofline-Extraction dataset from MATLAB file.
+        Args:
+            matlab_path: Path to imdb.mat file
+        """
+        print(f"Processing Roofline-Extraction dataset from {matlab_path}")
+        
+        try:
+            # Load MATLAB file
+            data = sio.loadmat(matlab_path)
+            imdb = data['imdb']
+            
+            # Extract data
+            images = imdb['images'][0, 0]  # RGB images
+            depths = imdb['depths'][0, 0]  # nDSMs
+            elements = imdb['elements'][0, 0]  # Roof elements
+            
+            num_samples = len(images)
+            print(f"Found {num_samples} samples")
+            
+            # Split indices
+            indices = np.random.permutation(num_samples)
+            train_size = int(num_samples * DATASET_CONFIG['train_split'])
+            val_size = int(num_samples * DATASET_CONFIG['val_split'])
+            
+            train_indices = indices[:train_size]
+            val_indices = indices[train_size:train_size+val_size]
+            test_indices = indices[train_size+val_size:]
+            
+            # Process each split
+            splits = [
+                (train_indices, self.train_dir, 'train'),
+                (val_indices, self.val_dir, 'validation'),
+                (test_indices, self.test_dir, 'test')
+            ]
+            
+            for indices, output_dir, split_name in splits:
+                print(f"\nProcessing {split_name} split...")
+                for idx in tqdm(indices):
+                    # Save image
+                    image = images[idx]
+                    image_path = output_dir / "images" / f"roofline_{idx:05d}.png"
+                    cv2.imwrite(str(image_path), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+                    
+                    # Create feature masks
+                    element_mask = elements[idx]
+                    h, w = element_mask.shape[:2]
+                    
+                    # Initialize separate masks for each feature
+                    outline_mask = np.zeros((h, w), dtype=np.uint8)
+                    ridge_mask = np.zeros((h, w), dtype=np.uint8)
+                    hip_mask = np.zeros((h, w), dtype=np.uint8)
+                    valley_mask = np.zeros((h, w), dtype=np.uint8)
+                    
+                    # Extract features based on color coding
+                    outline_mask[element_mask[..., 0] > 128] = 255  # Red channel for eaves
+                    ridge_mask[element_mask[..., 1] > 128] = 255    # Green channel for ridges
+                    hip_mask[element_mask[..., 2] > 128] = 255      # Blue channel for hips
+                    
+                    # Save masks
+                    mask_dir = output_dir / "masks" / f"roofline_{idx:05d}"
+                    mask_dir.mkdir(exist_ok=True)
+                    
+                    cv2.imwrite(str(mask_dir / "outline.png"), outline_mask)
+                    cv2.imwrite(str(mask_dir / "ridge.png"), ridge_mask)
+                    cv2.imwrite(str(mask_dir / "hip.png"), hip_mask)
+                    cv2.imwrite(str(mask_dir / "valley.png"), valley_mask)
+            
+            print("Roofline-Extraction dataset processing complete")
+            
+        except Exception as e:
+            print(f"Error processing Roofline-Extraction dataset: {str(e)}")
+            raise
     
-    return mask
+    def process_rid_dataset(self, rid_dir):
+        """
+        Process RID dataset.
+        Args:
+            rid_dir: Directory containing RID dataset
+        """
+        print(f"Processing RID dataset from {rid_dir}")
+        
+        try:
+            rid_dir = Path(rid_dir)
+            image_dir = rid_dir / "images"
+            label_dir = rid_dir / "labels"
+            
+            if not image_dir.exists() or not label_dir.exists():
+                raise ValueError(f"Invalid RID dataset directory structure in {rid_dir}")
+            
+            # Get all image files
+            image_files = list(image_dir.glob("*.png")) + list(image_dir.glob("*.jpg"))
+            num_samples = len(image_files)
+            print(f"Found {num_samples} samples")
+            
+            # Split indices
+            indices = np.random.permutation(num_samples)
+            train_size = int(num_samples * DATASET_CONFIG['train_split'])
+            val_size = int(num_samples * DATASET_CONFIG['val_split'])
+            
+            train_files = [image_files[i] for i in indices[:train_size]]
+            val_files = [image_files[i] for i in indices[train_size:train_size+val_size]]
+            test_files = [image_files[i] for i in indices[train_size+val_size:]]
+            
+            # Process each split
+            splits = [
+                (train_files, self.train_dir, 'train'),
+                (val_files, self.val_dir, 'validation'),
+                (test_files, self.test_dir, 'test')
+            ]
+            
+            for files, output_dir, split_name in splits:
+                print(f"\nProcessing {split_name} split...")
+                for image_file in tqdm(files):
+                    # Load and save image
+                    image = cv2.imread(str(image_file))
+                    image_path = output_dir / "images" / f"rid_{image_file.stem}.png"
+                    cv2.imwrite(str(image_path), image)
+                    
+                    # Load and process label
+                    label_file = label_dir / f"{image_file.stem}_label.png"
+                    if label_file.exists():
+                        label = cv2.imread(str(label_file))
+                        
+                        # Create feature masks based on RID labels
+                        mask_dir = output_dir / "masks" / f"rid_{image_file.stem}"
+                        mask_dir.mkdir(exist_ok=True)
+                        
+                        # Convert RID labels to our format
+                        outline_mask = np.zeros(label.shape[:2], dtype=np.uint8)
+                        ridge_mask = np.zeros(label.shape[:2], dtype=np.uint8)
+                        hip_mask = np.zeros(label.shape[:2], dtype=np.uint8)
+                        valley_mask = np.zeros(label.shape[:2], dtype=np.uint8)
+                        
+                        # Map RID labels to our features
+                        # Note: Adjust these mappings based on RID's actual label format
+                        outline_mask[label[..., 0] > 128] = 255
+                        ridge_mask[label[..., 1] > 128] = 255
+                        hip_mask[label[..., 2] > 128] = 255
+                        
+                        # Save masks
+                        cv2.imwrite(str(mask_dir / "outline.png"), outline_mask)
+                        cv2.imwrite(str(mask_dir / "ridge.png"), ridge_mask)
+                        cv2.imwrite(str(mask_dir / "hip.png"), hip_mask)
+                        cv2.imwrite(str(mask_dir / "valley.png"), valley_mask)
+            
+            print("RID dataset processing complete")
+            
+        except Exception as e:
+            print(f"Error processing RID dataset: {str(e)}")
+            raise
 
-def prepare_dataset(rid_path, output_path, split_ratio=0.8):
-    """
-    Prepare training dataset from RID.
-    
-    Args:
-        rid_path (str): Path to RID dataset
-        output_path (str): Path to save processed dataset
-        split_ratio (float): Train/val split ratio
-    """
-    rid_path = Path(rid_path)
-    output_path = Path(output_path)
-    
-    # Create output directories
-    train_img_dir = output_path / 'train' / 'images'
-    train_mask_dir = output_path / 'train' / 'masks'
-    val_img_dir = output_path / 'val' / 'images'
-    val_mask_dir = output_path / 'val' / 'masks'
-    
-    for dir_path in [train_img_dir, train_mask_dir, val_img_dir, val_mask_dir]:
-        dir_path.mkdir(parents=True, exist_ok=True)
-    
-    # Class mapping for mask values
-    class_mapping = {
-        'roof': 1,
-        'ridge': 2,
-        'eave': 3
-    }
-    
-    # Process each image
-    image_paths = list(rid_path.glob('*.jpg'))
-    np.random.shuffle(image_paths)
-    
-    # Split into train/val
-    split_idx = int(len(image_paths) * split_ratio)
-    train_paths = image_paths[:split_idx]
-    val_paths = image_paths[split_idx:]
-    
-    def process_subset(image_paths, img_dir, mask_dir):
-        for img_path in tqdm(image_paths):
-            # Load and resize image
-            image = cv2.imread(str(img_path))
-            image = cv2.resize(image, (1024, 1024))
-            
-            # Load annotations
-            anno_path = img_path.with_suffix('.json')
-            if not anno_path.exists():
-                continue
-                
-            with open(anno_path, 'r') as f:
-                annotations = json.load(f)
-            
-            # Create mask
-            mask = create_mask_from_annotations(
-                (1024, 1024),
-                annotations,
-                class_mapping
-            )
-            
-            # Save files
-            base_name = img_path.stem
-            cv2.imwrite(str(img_dir / f'{base_name}.jpg'), image)
-            cv2.imwrite(str(mask_dir / f'{base_name}_mask.png'), mask)
-    
-    # Process train and val sets
-    print('Processing training set...')
-    process_subset(train_paths, train_img_dir, train_mask_dir)
-    
-    print('Processing validation set...')
-    process_subset(val_paths, val_img_dir, val_mask_dir)
-    
-    # Save class mapping
-    with open(output_path / 'class_mapping.json', 'w') as f:
-        json.dump(class_mapping, f, indent=2)
-    
-    print(f'Dataset prepared with {len(train_paths)} training and {len(val_paths)} validation images')
-
-def verify_dataset(dataset_path):
-    """
-    Verify the prepared dataset.
-    
-    Args:
-        dataset_path (str): Path to processed dataset
-    """
-    dataset_path = Path(dataset_path)
-    
-    def check_subset(subset):
-        img_dir = dataset_path / subset / 'images'
-        mask_dir = dataset_path / subset / 'masks'
-        
-        n_images = len(list(img_dir.glob('*.jpg')))
-        n_masks = len(list(mask_dir.glob('*.png')))
-        
-        print(f'{subset} set:')
-        print(f'  Images: {n_images}')
-        print(f'  Masks: {n_masks}')
-        
-        if n_images != n_masks:
-            print('  Warning: Number of images and masks does not match!')
-        
-        # Check image sizes
-        for img_path in img_dir.glob('*.jpg'):
-            img = cv2.imread(str(img_path))
-            mask_path = mask_dir / f'{img_path.stem}_mask.png'
-            
-            if not mask_path.exists():
-                print(f'  Warning: Missing mask for {img_path.name}')
-                continue
-            
-            mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
-            
-            if img.shape[:2] != mask.shape:
-                print(f'  Warning: Size mismatch for {img_path.name}')
-                print(f'    Image size: {img.shape[:2]}')
-                print(f'    Mask size: {mask.shape}')
-    
-    check_subset('train')
-    check_subset('val')
-
-if __name__ == '__main__':
+def main():
+    """Main function to prepare datasets."""
     import argparse
-    
-    parser = argparse.ArgumentParser(description='Prepare RID dataset for training')
-    parser.add_argument('rid_path', help='Path to RID dataset')
-    parser.add_argument('output_path', help='Path to save processed dataset')
-    parser.add_argument('--split', type=float, default=0.8, help='Train/val split ratio')
-    parser.add_argument('--verify', action='store_true', help='Verify dataset after preparation')
-    
+    parser = argparse.ArgumentParser(description="Prepare roof detection datasets")
+    parser.add_argument("--roofline", help="Path to Roofline-Extraction imdb.mat file")
+    parser.add_argument("--rid", help="Path to RID dataset directory")
+    parser.add_argument("--output", default="data/processed",
+                       help="Output directory for processed dataset")
     args = parser.parse_args()
     
-    prepare_dataset(args.rid_path, args.output_path, args.split)
+    preparator = DatasetPreparator(args.output)
     
-    if args.verify:
-        verify_dataset(args.output_path)
+    if args.roofline:
+        preparator.process_roofline_dataset(args.roofline)
+    
+    if args.rid:
+        preparator.process_rid_dataset(args.rid)
+    
+    if not args.roofline and not args.rid:
+        print("Error: Please provide at least one dataset path (--roofline or --rid)")
+
+if __name__ == "__main__":
+    main()
