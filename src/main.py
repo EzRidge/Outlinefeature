@@ -1,111 +1,129 @@
 """
-Main script for roof feature detection and measurement.
+Main script for training and evaluating the roof feature detection model.
 """
 
-import os
-import sys
+import argparse
 import logging
 from pathlib import Path
 
-from .prepare_data import prepare_dataset, verify_dataset
+import torch
+from torch.utils.data import DataLoader
+
+from .models import create_model
+from .data import RoofDataset
 from .train import train_model
-from .predict import main as predict_main
+from .utils import visualize_predictions, save_predictions
+from .config import MODEL_CONFIG, TRAIN_CONFIG, DATA_DIR, MODELS_DIR
 
 def setup_logging():
-    """Setup logging configuration."""
+    """Configure logging."""
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler('roof_detection.log')
-        ]
+        format='%(asctime)s - %(levelname)s - %(message)s'
     )
-    return logging.getLogger(__name__)
 
-def prepare_command(args):
-    """Handle dataset preparation command."""
-    logger = setup_logging()
-    logger.info('Preparing dataset...')
-    
-    prepare_dataset(args.rid_path, args.output_path, args.split)
-    
-    if args.verify:
-        logger.info('Verifying dataset...')
-        verify_dataset(args.output_path)
-    
-    logger.info('Dataset preparation completed')
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description='Roof Feature Detection')
+    parser.add_argument('--mode', choices=['train', 'eval'], default='train',
+                      help='Run mode: train or eval')
+    parser.add_argument('--data_dir', type=str, default=str(DATA_DIR),
+                      help='Path to data directory')
+    parser.add_argument('--model_path', type=str, default=str(MODELS_DIR / 'best_model.pth'),
+                      help='Path to model weights (for eval mode)')
+    parser.add_argument('--batch_size', type=int, default=MODEL_CONFIG['batch_size'],
+                      help='Batch size')
+    parser.add_argument('--epochs', type=int, default=MODEL_CONFIG['epochs'],
+                      help='Number of epochs')
+    parser.add_argument('--learning_rate', type=float, default=MODEL_CONFIG['learning_rate'],
+                      help='Learning rate')
+    return parser.parse_args()
 
-def train_command(args):
-    """Handle model training command."""
-    logger = setup_logging()
-    logger.info('Starting model training...')
+def train(args):
+    """Training pipeline."""
+    logging.info('Starting training pipeline')
     
-    train_model(
-        image_dir=args.image_dir,
-        mask_dir=args.mask_dir,
-        num_epochs=args.epochs,
+    # Create model
+    model = create_model(MODEL_CONFIG)
+    logging.info(f'Created model: {model.__class__.__name__}')
+    
+    # Setup data loaders
+    train_dataset = RoofDataset(split='train')
+    val_dataset = RoofDataset(split='val')
+    
+    train_loader = DataLoader(
+        train_dataset,
         batch_size=args.batch_size,
-        learning_rate=args.learning_rate,
-        device=args.device
+        shuffle=True,
+        num_workers=TRAIN_CONFIG['num_workers'],
+        pin_memory=TRAIN_CONFIG['pin_memory']
     )
     
-    logger.info('Training completed')
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=TRAIN_CONFIG['num_workers'],
+        pin_memory=TRAIN_CONFIG['pin_memory']
+    )
+    
+    # Training
+    train_model(
+        train_loader=train_loader,
+        val_loader=val_loader,
+        model=model,
+        num_epochs=args.epochs,
+        learning_rate=args.learning_rate
+    )
+    
+    logging.info('Training completed')
 
-def predict_command(args):
-    """Handle prediction command."""
-    logger = setup_logging()
-    logger.info('Running inference...')
+def evaluate(args):
+    """Evaluation pipeline."""
+    logging.info('Starting evaluation pipeline')
     
-    predict_main(
-        args.model_path,
-        args.input_path,
-        args.output_dir,
-        args.device
+    # Load model
+    model = create_model(MODEL_CONFIG)
+    model.load_state_dict(torch.load(args.model_path))
+    model = model.to(TRAIN_CONFIG['device'])
+    model.eval()
+    logging.info(f'Loaded model from {args.model_path}')
+    
+    # Setup data loader
+    test_dataset = RoofDataset(split='test')
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=TRAIN_CONFIG['num_workers'],
+        pin_memory=TRAIN_CONFIG['pin_memory']
     )
     
-    logger.info('Inference completed')
+    # Evaluate
+    with torch.no_grad():
+        for batch_idx, (images, _) in enumerate(test_loader):
+            images = images.to(TRAIN_CONFIG['device'])
+            predictions = model(images)
+            
+            # Save predictions
+            for i in range(images.size(0)):
+                save_predictions(
+                    images[i],
+                    {k: v[i:i+1] for k, v in predictions.items()},
+                    f'test_sample_{batch_idx}_{i}'
+                )
+    
+    logging.info('Evaluation completed')
 
 def main():
-    """Main entry point."""
-    import argparse
+    """Main function."""
+    args = parse_args()
+    setup_logging()
     
-    parser = argparse.ArgumentParser(description='Roof feature detection and measurement')
-    subparsers = parser.add_subparsers(dest='command', help='Command to run')
-    
-    # Dataset preparation command
-    prepare_parser = subparsers.add_parser('prepare', help='Prepare training dataset')
-    prepare_parser.add_argument('rid_path', help='Path to RID dataset')
-    prepare_parser.add_argument('output_path', help='Path to save processed dataset')
-    prepare_parser.add_argument('--split', type=float, default=0.8, help='Train/val split ratio')
-    prepare_parser.add_argument('--verify', action='store_true', help='Verify dataset after preparation')
-    
-    # Training command
-    train_parser = subparsers.add_parser('train', help='Train the model')
-    train_parser.add_argument('image_dir', help='Directory containing training images')
-    train_parser.add_argument('mask_dir', help='Directory containing mask annotations')
-    train_parser.add_argument('--epochs', type=int, default=50, help='Number of epochs')
-    train_parser.add_argument('--batch-size', type=int, default=8, help='Batch size')
-    train_parser.add_argument('--learning-rate', type=float, default=1e-4, help='Learning rate')
-    train_parser.add_argument('--device', default='cuda', help='Device to train on')
-    
-    # Prediction command
-    predict_parser = subparsers.add_parser('predict', help='Run inference')
-    predict_parser.add_argument('model_path', help='Path to trained model checkpoint')
-    predict_parser.add_argument('input_path', help='Path to input image or directory')
-    predict_parser.add_argument('output_dir', help='Directory to save results')
-    predict_parser.add_argument('--device', default='cuda', help='Device to run inference on')
-    
-    args = parser.parse_args()
-    
-    if args.command == 'prepare':
-        prepare_command(args)
-    elif args.command == 'train':
-        train_command(args)
-    elif args.command == 'predict':
-        predict_command(args)
+    if args.mode == 'train':
+        train(args)
     else:
-        parser.print_help()
+        evaluate(args)
 
 if __name__ == '__main__':
     main()

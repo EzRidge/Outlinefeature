@@ -1,155 +1,130 @@
 """
-Data loading and preprocessing utilities for roof feature detection.
+Dataset handling for roof feature detection.
 """
 
-import os
+import torch
+from torch.utils.data import Dataset
 import cv2
 import numpy as np
-from PIL import Image
-import torch
-from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms
+from pathlib import Path
+import json
+from .config import MODEL_CONFIG, DATA_DIR
 
 class RoofDataset(Dataset):
-    """
-    Dataset class for loading and preprocessing roof images and their annotations.
-    """
+    """Dataset for roof images and their feature annotations."""
     
-    def __init__(self, image_dir, mask_dir=None, transform=None, target_size=(1024, 1024)):
+    def __init__(self, split='train', transform=None):
         """
         Initialize the dataset.
         
         Args:
-            image_dir (str): Directory containing input images
-            mask_dir (str, optional): Directory containing annotation masks
-            transform (callable, optional): Optional transform to be applied on images
-            target_size (tuple): Target size for resizing images (default: 1024x1024)
+            split (str): One of 'train', 'val', or 'test'
+            transform: Optional transform to be applied to images
         """
-        self.image_dir = image_dir
-        self.mask_dir = mask_dir
+        super().__init__()
+        self.split = split
         self.transform = transform
-        self.target_size = target_size
+        self.input_size = MODEL_CONFIG['input_size']
         
-        # Get list of image files
-        self.images = [f for f in os.listdir(image_dir) if f.endswith(('.jpg', '.png', '.tif'))]
+        # Set up paths
+        self.data_dir = DATA_DIR / split
+        self.image_dir = self.data_dir / 'images'
+        self.annotation_dir = self.data_dir / 'annotations'
         
+        # Load image paths and annotations
+        self.image_paths = sorted(list(self.image_dir.glob('*.jpg')))
+        self.annotation_paths = sorted(list(self.annotation_dir.glob('*.json')))
+        
+        assert len(self.image_paths) == len(self.annotation_paths), \
+            f"Number of images ({len(self.image_paths)}) and annotations ({len(self.annotation_paths)}) don't match"
+    
     def __len__(self):
-        return len(self.images)
+        return len(self.image_paths)
     
     def __getitem__(self, idx):
+        """Get a single item from the dataset."""
         # Load image
-        img_name = self.images[idx]
-        img_path = os.path.join(self.image_dir, img_name)
-        image = cv2.imread(img_path)
+        image_path = self.image_paths[idx]
+        image = cv2.imread(str(image_path))
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         
-        # Resize image
-        image = cv2.resize(image, self.target_size, interpolation=cv2.INTER_AREA)
+        # Load annotation
+        annotation_path = self.annotation_paths[idx]
+        with open(annotation_path, 'r') as f:
+            annotation = json.load(f)
         
-        # Convert to tensor
-        image = torch.from_numpy(image.transpose((2, 0, 1))).float() / 255.0
+        # Prepare feature maps
+        h, w = self.input_size
+        outline_map = np.zeros((h, w), dtype=np.float32)
+        ridge_map = np.zeros((h, w), dtype=np.float32)
+        hip_map = np.zeros((h, w), dtype=np.float32)
+        valley_map = np.zeros((h, w), dtype=np.float32)
+        angle_map = np.zeros((h, w), dtype=np.float32)
         
-        # Load mask if available
-        if self.mask_dir:
-            mask_name = img_name.replace('.jpg', '_mask.png').replace('.tif', '_mask.png')
-            mask_path = os.path.join(self.mask_dir, mask_name)
-            
-            if os.path.exists(mask_path):
-                mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-                mask = cv2.resize(mask, self.target_size, interpolation=cv2.INTER_NEAREST)
-                mask = torch.from_numpy(mask).long()
-            else:
-                mask = torch.zeros(self.target_size).long()
-            
-            # Apply transforms if specified
-            if self.transform:
-                image = self.transform(image)
-                mask = self.transform(mask)
-            
-            return image, mask
+        # Draw features on maps
+        self._draw_outline(outline_map, annotation['outline'])
+        self._draw_lines(ridge_map, annotation['ridge_lines'])
+        self._draw_lines(hip_map, annotation['hip_lines'])
+        self._draw_lines(valley_map, annotation['valley_lines'])
+        self._draw_angles(angle_map, annotation['angles'])
         
-        # Apply transforms if specified
+        # Resize image and maps
+        image = cv2.resize(image, (w, h))
+        
+        # Apply transforms if any
         if self.transform:
             image = self.transform(image)
         
-        return image
+        # Convert to tensors
+        image = torch.from_numpy(image.transpose(2, 0, 1)).float() / 255.0
+        targets = {
+            'outline': torch.from_numpy(outline_map)[None],  # Add channel dimension
+            'ridge': torch.from_numpy(ridge_map)[None],
+            'hip': torch.from_numpy(hip_map)[None],
+            'valley': torch.from_numpy(valley_map)[None],
+            'angles': torch.from_numpy(angle_map)[None]
+        }
+        
+        return image, targets
+    
+    def _draw_outline(self, mask, points):
+        """Draw roof outline on mask."""
+        points = np.array(points, dtype=np.int32)
+        cv2.fillPoly(mask, [points], 1)
+    
+    def _draw_lines(self, mask, lines):
+        """Draw lines (ridge, hip, valley) on mask."""
+        for line in lines:
+            pt1 = tuple(map(int, line[0]))
+            pt2 = tuple(map(int, line[1]))
+            cv2.line(mask, pt1, pt2, 1, thickness=2)
+    
+    def _draw_angles(self, mask, angles):
+        """Draw angle predictions on mask."""
+        for angle_data in angles:
+            x, y = map(int, angle_data['position'])
+            angle = angle_data['angle']
+            mask[y, x] = angle
 
-def get_data_transforms():
-    """
-    Get default data augmentation transforms.
+def create_dataloaders(batch_size, num_workers=4, pin_memory=True):
+    """Create training and validation dataloaders."""
+    train_dataset = RoofDataset(split='train')
+    val_dataset = RoofDataset(split='val')
     
-    Returns:
-        dict: Dictionary containing train and validation transforms
-    """
-    train_transform = transforms.Compose([
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomVerticalFlip(),
-        transforms.RandomRotation(10),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                           std=[0.229, 0.224, 0.225])
-    ])
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=pin_memory
+    )
     
-    val_transform = transforms.Compose([
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                           std=[0.229, 0.224, 0.225])
-    ])
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=pin_memory
+    )
     
-    return {
-        'train': train_transform,
-        'val': val_transform
-    }
-
-def create_dataloaders(image_dir, mask_dir=None, batch_size=8, num_workers=4):
-    """
-    Create DataLoader instances for training and validation.
-    
-    Args:
-        image_dir (str): Directory containing input images
-        mask_dir (str, optional): Directory containing annotation masks
-        batch_size (int): Batch size for training
-        num_workers (int): Number of worker processes for data loading
-        
-    Returns:
-        tuple: (train_loader, val_loader) if mask_dir is provided,
-               otherwise returns a single dataloader
-    """
-    transforms = get_data_transforms()
-    
-    if mask_dir:
-        # Split into train/val
-        dataset = RoofDataset(image_dir, mask_dir, transform=None)
-        train_size = int(0.8 * len(dataset))
-        val_size = len(dataset) - train_size
-        train_dataset, val_dataset = torch.utils.data.random_split(
-            dataset, [train_size, val_size]
-        )
-        
-        # Apply appropriate transforms
-        train_dataset.transform = transforms['train']
-        val_dataset.transform = transforms['val']
-        
-        train_loader = DataLoader(
-            train_dataset, 
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=num_workers
-        )
-        
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=num_workers
-        )
-        
-        return train_loader, val_loader
-    
-    else:
-        dataset = RoofDataset(image_dir, transform=transforms['val'])
-        return DataLoader(
-            dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=num_workers
-        )
+    return train_loader, val_loader

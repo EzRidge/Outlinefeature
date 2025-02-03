@@ -1,193 +1,200 @@
 """
-Utility functions for post-processing and measurement calculations.
+Utility functions for roof feature detection.
 """
 
-import cv2
+import torch
 import numpy as np
-from shapely.geometry import Polygon, LineString
-from shapely.ops import unary_union
+import cv2
+import matplotlib.pyplot as plt
+from pathlib import Path
+import logging
+from .config import MODEL_CONFIG, OUTPUT_DIR
 
-def extract_contours(mask, min_area=100):
+def visualize_predictions(image, predictions, save_path=None):
     """
-    Extract contours from segmentation mask.
+    Visualize model predictions.
     
     Args:
-        mask (np.ndarray): Binary segmentation mask
-        min_area (int): Minimum contour area to keep
-        
-    Returns:
-        list: List of contours as numpy arrays
+        image: RGB image tensor [C, H, W]
+        predictions: Dict of prediction tensors
+        save_path: Optional path to save visualization
     """
-    contours, _ = cv2.findContours(
-        mask.astype(np.uint8), 
-        cv2.RETR_EXTERNAL, 
-        cv2.CHAIN_APPROX_SIMPLE
-    )
+    # Convert image tensor to numpy
+    image = image.cpu().numpy().transpose(1, 2, 0)
+    image = (image * 255).astype(np.uint8)
     
-    # Filter small contours
-    return [cnt for cnt in contours if cv2.contourArea(cnt) > min_area]
-
-def simplify_polygon(contour, epsilon_factor=0.02):
-    """
-    Simplify polygon contour using Douglas-Peucker algorithm.
+    # Create figure with subplots
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    axes = axes.ravel()
     
-    Args:
-        contour (np.ndarray): Contour points
-        epsilon_factor (float): Approximation accuracy factor
-        
-    Returns:
-        np.ndarray: Simplified contour points
-    """
-    epsilon = epsilon_factor * cv2.arcLength(contour, True)
-    return cv2.approxPolyDP(contour, epsilon, True)
-
-def get_roof_area(contour, pixels_per_meter=10):
-    """
-    Calculate roof area from contour.
+    # Original image
+    axes[0].imshow(image)
+    axes[0].set_title('Original Image')
     
-    Args:
-        contour (np.ndarray): Roof contour points
-        pixels_per_meter (float): Pixel to meter conversion factor
-        
-    Returns:
-        float: Roof area in square meters
-    """
-    area_pixels = cv2.contourArea(contour)
-    return area_pixels / (pixels_per_meter ** 2)
-
-def get_roof_perimeter(contour, pixels_per_meter=10):
-    """
-    Calculate roof perimeter from contour.
+    # Outline prediction
+    outline = predictions['outline'].cpu().numpy()[0]
+    axes[1].imshow(outline, cmap='jet')
+    axes[1].set_title('Roof Outline')
     
-    Args:
-        contour (np.ndarray): Roof contour points
-        pixels_per_meter (float): Pixel to meter conversion factor
-        
-    Returns:
-        float: Roof perimeter in meters
-    """
-    perimeter_pixels = cv2.arcLength(contour, True)
-    return perimeter_pixels / pixels_per_meter
-
-def detect_ridge_lines(mask, min_length=20):
-    """
-    Detect ridge lines from ridge segmentation mask.
+    # Ridge lines
+    ridge = predictions['ridge'].cpu().numpy()[0]
+    axes[2].imshow(ridge, cmap='jet')
+    axes[2].set_title('Ridge Lines')
     
-    Args:
-        mask (np.ndarray): Ridge line segmentation mask
-        min_length (int): Minimum line length to keep
-        
-    Returns:
-        list: List of detected lines as (x1,y1,x2,y2) tuples
-    """
-    edges = cv2.Canny(mask.astype(np.uint8), 50, 150)
-    lines = cv2.HoughLinesP(
-        edges, 
-        rho=1,
-        theta=np.pi/180,
-        threshold=50,
-        minLineLength=min_length,
-        maxLineGap=10
-    )
+    # Hip lines
+    hip = predictions['hip'].cpu().numpy()[0]
+    axes[3].imshow(hip, cmap='jet')
+    axes[3].set_title('Hip Lines')
     
-    if lines is None:
-        return []
+    # Valley lines
+    valley = predictions['valley'].cpu().numpy()[0]
+    axes[4].imshow(valley, cmap='jet')
+    axes[4].set_title('Valley Lines')
     
-    return [line[0] for line in lines]
-
-def get_roof_pitch(ridge_lines, eave_lines):
-    """
-    Estimate roof pitch from ridge and eave lines.
+    # Angles
+    angles = predictions['angles'].cpu().numpy()[0]
+    im = axes[5].imshow(angles, cmap='hsv')
+    axes[5].set_title('Angle Predictions')
+    plt.colorbar(im, ax=axes[5])
     
-    Args:
-        ridge_lines (list): List of ridge lines
-        eave_lines (list): List of eave lines
-        
-    Returns:
-        float: Estimated roof pitch in degrees
-    """
-    if not ridge_lines or not eave_lines:
-        return None
-    
-    # Convert to LineString objects
-    ridge = LineString(ridge_lines[0])
-    eave = LineString(eave_lines[0])
-    
-    # Get angle between lines
-    angle = abs(np.arctan2(
-        ridge.coords[1][1] - ridge.coords[0][1],
-        ridge.coords[1][0] - ridge.coords[0][0]
-    ) - np.arctan2(
-        eave.coords[1][1] - eave.coords[0][1],
-        eave.coords[1][0] - eave.coords[0][0]
-    ))
-    
-    return np.degrees(angle)
-
-def merge_close_polygons(polygons, distance_threshold=10):
-    """
-    Merge polygons that are within a certain distance of each other.
-    
-    Args:
-        polygons (list): List of polygon contours
-        distance_threshold (float): Distance threshold for merging
-        
-    Returns:
-        list: List of merged polygon contours
-    """
-    # Convert contours to shapely polygons
-    shapely_polygons = [Polygon(cnt.reshape(-1, 2)) for cnt in polygons]
-    
-    # Buffer polygons and merge overlapping ones
-    buffered = [p.buffer(distance_threshold) for p in shapely_polygons]
-    merged = unary_union(buffered).buffer(-distance_threshold)
-    
-    # Convert back to contours
-    if merged.geom_type == 'Polygon':
-        coords = np.array(merged.exterior.coords[:-1], dtype=np.int32)
-        return [coords.reshape(-1, 1, 2)]
+    # Adjust layout and save/show
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path)
+        plt.close()
     else:
-        contours = []
-        for geom in merged.geoms:
-            coords = np.array(geom.exterior.coords[:-1], dtype=np.int32)
-            contours.append(coords.reshape(-1, 1, 2))
-        return contours
+        plt.show()
 
-def calculate_measurements(roof_mask, ridge_mask, eave_mask, pixels_per_meter=10):
+def overlay_features(image, predictions, threshold=0.5):
     """
-    Calculate comprehensive roof measurements from segmentation masks.
+    Overlay predicted features on the original image.
     
     Args:
-        roof_mask (np.ndarray): Binary mask of roof outline
-        ridge_mask (np.ndarray): Binary mask of ridge lines
-        eave_mask (np.ndarray): Binary mask of eave lines
-        pixels_per_meter (float): Pixel to meter conversion factor
-        
+        image: RGB image tensor [C, H, W]
+        predictions: Dict of prediction tensors
+        threshold: Confidence threshold for predictions
+    
     Returns:
-        dict: Dictionary containing roof measurements
+        Annotated image with overlaid features
     """
-    # Extract contours
-    roof_contours = extract_contours(roof_mask)
-    if not roof_contours:
-        return None
+    # Convert image tensor to numpy
+    image = image.cpu().numpy().transpose(1, 2, 0)
+    image = (image * 255).astype(np.uint8)
+    result = image.copy()
     
-    # Get main roof contour
-    main_contour = max(roof_contours, key=cv2.contourArea)
+    # Overlay outline
+    outline = (predictions['outline'].cpu().numpy()[0] > threshold).astype(np.uint8)
+    contours, _ = cv2.findContours(outline, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(result, contours, -1, (0, 255, 0), 2)
     
-    # Simplify polygon
-    simplified_contour = simplify_polygon(main_contour)
+    # Overlay ridge lines
+    ridge = (predictions['ridge'].cpu().numpy()[0] > threshold).astype(np.uint8)
+    ridge_points = np.where(ridge > 0)
+    result[ridge_points[0], ridge_points[1]] = [255, 0, 0]  # Red
     
-    # Detect lines
-    ridge_lines = detect_ridge_lines(ridge_mask)
-    eave_lines = detect_ridge_lines(eave_mask)
+    # Overlay hip lines
+    hip = (predictions['hip'].cpu().numpy()[0] > threshold).astype(np.uint8)
+    hip_points = np.where(hip > 0)
+    result[hip_points[0], hip_points[1]] = [0, 0, 255]  # Blue
     
-    # Calculate measurements
-    measurements = {
-        'area': get_roof_area(simplified_contour, pixels_per_meter),
-        'perimeter': get_roof_perimeter(simplified_contour, pixels_per_meter),
-        'pitch': get_roof_pitch(ridge_lines, eave_lines) if ridge_lines and eave_lines else None,
-        'num_facets': len(roof_contours),
-        'contour_points': simplified_contour.reshape(-1, 2).tolist()
-    }
+    # Overlay valley lines
+    valley = (predictions['valley'].cpu().numpy()[0] > threshold).astype(np.uint8)
+    valley_points = np.where(valley > 0)
+    result[valley_points[0], valley_points[1]] = [255, 255, 0]  # Yellow
     
-    return measurements
+    return result
+
+def save_predictions(image, predictions, filename, output_dir=OUTPUT_DIR):
+    """
+    Save model predictions and visualizations.
+    
+    Args:
+        image: RGB image tensor
+        predictions: Dict of prediction tensors
+        filename: Base filename for saving
+        output_dir: Directory to save outputs
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Save individual feature maps
+    for key, pred in predictions.items():
+        pred_np = pred.cpu().numpy()[0]
+        np.save(output_dir / f'{filename}_{key}.npy', pred_np)
+    
+    # Save visualization
+    visualize_predictions(
+        image, 
+        predictions,
+        save_path=output_dir / f'{filename}_visualization.png'
+    )
+    
+    # Save overlaid features
+    overlay = overlay_features(image, predictions)
+    cv2.imwrite(
+        str(output_dir / f'{filename}_overlay.png'),
+        cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR)
+    )
+
+def calculate_metrics(predictions, targets, threshold=0.5):
+    """
+    Calculate evaluation metrics.
+    
+    Args:
+        predictions: Dict of prediction tensors
+        targets: Dict of target tensors
+        threshold: Confidence threshold for predictions
+    
+    Returns:
+        Dict of metrics
+    """
+    metrics = {}
+    
+    for key in ['outline', 'ridge', 'hip', 'valley']:
+        pred = (predictions[key] > threshold).float()
+        target = targets[key]
+        
+        # Calculate IoU
+        intersection = (pred * target).sum()
+        union = (pred + target).clamp(0, 1).sum()
+        iou = (intersection / (union + 1e-6)).item()
+        
+        # Calculate precision and recall
+        true_pos = (pred * target).sum()
+        false_pos = (pred * (1 - target)).sum()
+        false_neg = ((1 - pred) * target).sum()
+        
+        precision = (true_pos / (true_pos + false_pos + 1e-6)).item()
+        recall = (true_pos / (true_pos + false_neg + 1e-6)).item()
+        
+        # F1 score
+        f1 = 2 * (precision * recall) / (precision + recall + 1e-6)
+        
+        metrics[key] = {
+            'iou': iou,
+            'precision': precision,
+            'recall': recall,
+            'f1': f1
+        }
+    
+    # Calculate angle error if available
+    if 'angles' in predictions and 'angles' in targets:
+        angle_error = torch.abs(predictions['angles'] - targets['angles'])
+        metrics['angle_mae'] = angle_error.mean().item()
+        metrics['angle_rmse'] = torch.sqrt((angle_error ** 2).mean()).item()
+    
+    return metrics
+
+def log_metrics(metrics, epoch, split='train'):
+    """Log evaluation metrics."""
+    logging.info(f'{split.capitalize()} Metrics - Epoch {epoch}:')
+    
+    for feature in ['outline', 'ridge', 'hip', 'valley']:
+        logging.info(f'  {feature.capitalize()}:')
+        for metric, value in metrics[feature].items():
+            logging.info(f'    {metric}: {value:.4f}')
+    
+    if 'angle_mae' in metrics:
+        logging.info('  Angles:')
+        logging.info(f'    MAE: {metrics["angle_mae"]:.4f}')
+        logging.info(f'    RMSE: {metrics["angle_rmse"]:.4f}')
