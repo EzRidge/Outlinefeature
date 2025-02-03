@@ -23,7 +23,8 @@ MODEL_CONFIG = {
     'pretrained': True,
     
     # Input settings
-    'input_size': (1024, 1024),  # Based on paper recommendations
+    'input_size': (512, 512),  # Memory-optimized size for training
+    'inference_size': (1024, 1024),  # Original size for inference
     'input_channels': 3,  # RGB input
     
     # Output settings
@@ -31,7 +32,7 @@ MODEL_CONFIG = {
     'feature_channels': 64,  # Base number of feature channels
     
     # Training settings
-    'batch_size': 8,  # Optimized for g5.2xlarge
+    'batch_size': 4,  # Memory-optimized for g5.2xlarge
     'epochs': 100,
     'learning_rate': 1e-4,
     'weight_decay': 1e-4,
@@ -52,6 +53,14 @@ TRAIN_CONFIG = {
     'num_workers': 4,
     'pin_memory': True,
     'save_frequency': 5,  # Save model every N epochs
+    'gradient_checkpointing': True,  # Memory optimization
+    
+    # Sliding window inference settings
+    'sliding_window': {
+        'overlap': 0.25,  # 25% overlap between windows
+        'batch_size': 1,  # Process one window at a time
+        'blend_mode': 'gaussian'  # Gaussian weighted blending of overlapping regions
+    },
     
     # Early stopping
     'early_stopping': {
