@@ -4,25 +4,49 @@ __pycache__/
 *$py.class
 *.so
 .Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
 venv/
 ENV/
 
 # IDEs
-.vscode/
 .idea/
+.vscode/
 *.swp
 *.swo
 
-# Logs and databases
-*.log
-*.sqlite
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
 
 # Project specific
-data/raw/*
-data/processed/*
-data/output/*
-models/*
-!data/raw/.gitkeep
-!data/processed/.gitkeep
-!data/output/.gitkeep
-!models/.gitkeep
+data/
+logs/
+models/
+
+# Large datasets
+Reference Materials/data/RID/m1655470/
+Reference Materials/data/Roofline-Extraction/imdb.mat
+
+# Keep visualization outputs
+!Reference Materials/data/*/visualizations/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
