@@ -33,6 +33,7 @@ ENV/
 # Jupyter Notebook
 .ipynb_checkpoints
 *.ipynb
+!notebooks/*.ipynb  # Allow notebooks in notebooks directory
 
 # Project specific
 data/
