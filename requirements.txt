@@ -19,6 +19,14 @@ tqdm>=4.62.0    # For progress bars
 # Network/Download
 requests>=2.26.0
 
+# SageMaker dependencies
+sagemaker-training>=4.0.0
+sagemaker-pytorch-training>=2.0.0
+
+# AWS utilities
+boto3>=1.26.0
+s3fs>=2023.1.0  # For S3 file system operations
+
 # Development tools
 jupyter>=1.0.0
 ipython>=7.0.0

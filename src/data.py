@@ -1,130 +1,166 @@
-"""
-Dataset handling for roof feature detection.
-"""
-
 import torch
 from torch.utils.data import Dataset
 import cv2
 import numpy as np
 from pathlib import Path
-import json
-from .config import MODEL_CONFIG, DATA_DIR
+import os
+from PIL import Image
+import rasterio
 
 class RoofDataset(Dataset):
-    """Dataset for roof images and their feature annotations."""
+    """Dataset for hybrid roof model combining RID and Roofline data."""
     
-    def __init__(self, split='train', transform=None):
+    def __init__(self, rid_indices, roofline_indices):
         """
         Initialize the dataset.
         
         Args:
-            split (str): One of 'train', 'val', or 'test'
-            transform: Optional transform to be applied to images
+            rid_indices: List of RID dataset indices
+            roofline_indices: List of Roofline dataset indices
         """
         super().__init__()
-        self.split = split
-        self.transform = transform
-        self.input_size = MODEL_CONFIG['input_size']
+        self.rid_indices = rid_indices
+        self.roofline_indices = roofline_indices
         
-        # Set up paths
-        self.data_dir = DATA_DIR / split
-        self.image_dir = self.data_dir / 'images'
-        self.annotation_dir = self.data_dir / 'annotations'
-        
-        # Load image paths and annotations
-        self.image_paths = sorted(list(self.image_dir.glob('*.jpg')))
-        self.annotation_paths = sorted(list(self.annotation_dir.glob('*.json')))
-        
-        assert len(self.image_paths) == len(self.annotation_paths), \
-            f"Number of images ({len(self.image_paths)}) and annotations ({len(self.annotation_paths)}) don't match"
-    
-    def __len__(self):
-        return len(self.image_paths)
-    
-    def __getitem__(self, idx):
-        """Get a single item from the dataset."""
-        # Load image
-        image_path = self.image_paths[idx]
-        image = cv2.imread(str(image_path))
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        
-        # Load annotation
-        annotation_path = self.annotation_paths[idx]
-        with open(annotation_path, 'r') as f:
-            annotation = json.load(f)
-        
-        # Prepare feature maps
-        h, w = self.input_size
-        outline_map = np.zeros((h, w), dtype=np.float32)
-        ridge_map = np.zeros((h, w), dtype=np.float32)
-        hip_map = np.zeros((h, w), dtype=np.float32)
-        valley_map = np.zeros((h, w), dtype=np.float32)
-        angle_map = np.zeros((h, w), dtype=np.float32)
-        
-        # Draw features on maps
-        self._draw_outline(outline_map, annotation['outline'])
-        self._draw_lines(ridge_map, annotation['ridge_lines'])
-        self._draw_lines(hip_map, annotation['hip_lines'])
-        self._draw_lines(valley_map, annotation['valley_lines'])
-        self._draw_angles(angle_map, annotation['angles'])
-        
-        # Resize image and maps
-        image = cv2.resize(image, (w, h))
-        
-        # Apply transforms if any
-        if self.transform:
-            image = self.transform(image)
-        
-        # Convert to tensors
-        image = torch.from_numpy(image.transpose(2, 0, 1)).float() / 255.0
-        targets = {
-            'outline': torch.from_numpy(outline_map)[None],  # Add channel dimension
-            'ridge': torch.from_numpy(ridge_map)[None],
-            'hip': torch.from_numpy(hip_map)[None],
-            'valley': torch.from_numpy(valley_map)[None],
-            'angles': torch.from_numpy(angle_map)[None]
+        # Class mapping based on paper insights
+        # Keep high-agreement classes separate, merge others
+        self.CLASS_MAPPING = {
+            0: 0,  # Background -> Background
+            1: 1,  # PV module -> PV module (high agreement, 0.68 IoU)
+            2: 2,  # Dormer -> Dormer (high agreement, 0.70 IoU)
+            3: 3,  # Window -> Window
+            4: 4,  # Ladder -> Ladder
+            5: 5,  # Chimney -> Chimney
+            6: 6,  # Shadow -> Shadow
+            7: 7,  # Tree -> Tree
+            8: 8   # Unknown -> Unknown
         }
         
-        return image, targets
+        # Base paths
+        self.rid_base = os.path.join("Reference Materials", "data", "RID", "m1655470", "RID_dataset")
+        self.roofline_base = os.path.join("Reference Materials", "data", "Roofline-Extraction")
+        
+        # RID paths
+        self.rid_images = os.path.join(self.rid_base, "images_roof_centered_geotiff")
+        self.rid_segments = os.path.join(self.rid_base, "masks_segments_reviewed")
+        self.rid_superstructures = os.path.join(self.rid_base, "masks_superstructures_reviewed")
+        
+        # Verify paths exist
+        required_paths = [
+            self.rid_base, self.roofline_base,
+            self.rid_images, self.rid_segments, self.rid_superstructures
+        ]
+        for path in required_paths:
+            if not os.path.exists(path):
+                raise RuntimeError(f"Required path does not exist: {path}")
     
-    def _draw_outline(self, mask, points):
-        """Draw roof outline on mask."""
-        points = np.array(points, dtype=np.int32)
-        cv2.fillPoly(mask, [points], 1)
+    def _remap_classes(self, mask):
+        """Remap class labels according to CLASS_MAPPING."""
+        remapped = np.zeros_like(mask)
+        for old_val, new_val in self.CLASS_MAPPING.items():
+            remapped[mask == old_val] = new_val
+        return remapped
     
-    def _draw_lines(self, mask, lines):
-        """Draw lines (ridge, hip, valley) on mask."""
-        for line in lines:
-            pt1 = tuple(map(int, line[0]))
-            pt2 = tuple(map(int, line[1]))
-            cv2.line(mask, pt1, pt2, 1, thickness=2)
+    def __len__(self):
+        return len(self.rid_indices)
     
-    def _draw_angles(self, mask, angles):
-        """Draw angle predictions on mask."""
-        for angle_data in angles:
-            x, y = map(int, angle_data['position'])
-            angle = angle_data['angle']
-            mask[y, x] = angle
+    def load_rid_sample(self, idx):
+        """Load a sample from the RID dataset."""
+        sample_id = self.rid_indices[idx]
+        
+        # Load image
+        image_path = os.path.join(self.rid_images, f"{sample_id}.tif")
+        print(f"Loading image: {image_path}")
+        if not os.path.exists(image_path):
+            error_msg = f"File not found: {image_path}"
+            print(error_msg)
+            raise FileNotFoundError(error_msg)
 
-def create_dataloaders(batch_size, num_workers=4, pin_memory=True):
-    """Create training and validation dataloaders."""
-    train_dataset = RoofDataset(split='train')
-    val_dataset = RoofDataset(split='val')
+        try:
+            # Load and process image
+            with rasterio.open(image_path) as src:
+                image_data = src.read()
+                print(f"Successfully read image data for sample {sample_id}")
+                print(f"Image shape: {image_data.shape}")
+                print(f"Image dtype: {image_data.dtype}")
+                print(f"Image value range: [{image_data.min()}, {image_data.max()}]")
+                
+                # Convert from CHW to HWC for OpenCV processing
+                image = image_data.transpose(1, 2, 0)
+                
+                # Resize with INTER_AREA for downsampling to prevent aliasing
+                image = cv2.resize(image, (224, 224), interpolation=cv2.INTER_AREA)
+                
+                # Convert to tensor and normalize
+                image = torch.from_numpy(image).float() / 255.0
+                
+                # Convert back to CHW for PyTorch
+                image = image.permute(2, 0, 1)
+                
+                print(f"Successfully processed image for sample {sample_id}")
+            
+            # Load segments
+            segments_path = os.path.join(self.rid_segments, f"{sample_id}.png")
+            with rasterio.open(segments_path) as src:
+                segments = src.read(1)  # Read first band
+                # Use nearest neighbor for label maps to avoid creating invalid classes
+                segments = cv2.resize(segments, (224, 224), interpolation=cv2.INTER_NEAREST)
+                segments = self._remap_classes(segments)
+                segments = torch.from_numpy(segments).long()
+                print(f"Successfully loaded segments for sample {sample_id}")
+            
+            # Load superstructures
+            superstructures_path = os.path.join(self.rid_superstructures, f"{sample_id}.png")
+            with rasterio.open(superstructures_path) as src:
+                superstructures = src.read(1)  # Read first band
+                # Use nearest neighbor for label maps to avoid creating invalid classes
+                superstructures = cv2.resize(superstructures, (224, 224), interpolation=cv2.INTER_NEAREST)
+                superstructures = self._remap_classes(superstructures)
+                superstructures = torch.from_numpy(superstructures).float()
+                print(f"Successfully loaded superstructures for sample {sample_id}")
+            
+            return {
+                'image': image,
+                'segments': segments,
+                'superstructures': superstructures
+            }
+            
+        except Exception as e:
+            error_msg = f"Error processing sample {sample_id}: {str(e)}"
+            print(error_msg)
+            raise RuntimeError(error_msg)
     
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=pin_memory
-    )
+    def load_roofline_sample(self, idx):
+        """Load a sample from the Roofline dataset."""
+        sample_id = self.roofline_indices[idx]
+        
+        # TODO: Implement actual Roofline data loading
+        # For now, return dummy tensors
+        h, w = 224, 224
+        
+        depth = torch.randn(h, w)  # Dummy depth map
+        
+        # Create combined lines tensor [3, H, W] for ridge, hip, valley
+        lines = torch.zeros(3, h, w)  # [ridge, hip, valley]
+        
+        return {
+            'depth': depth,
+            'lines': lines
+        }
     
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=pin_memory
-    )
-    
-    return train_loader, val_loader
+    def __getitem__(self, idx):
+        """Get a single item combining both datasets."""
+        # Load samples from both datasets
+        rid_sample = self.load_rid_sample(idx)
+        roofline_sample = self.load_roofline_sample(idx)
+        
+        # Combine features
+        features = {
+            'image': rid_sample['image'],
+            'segments': rid_sample['segments'],
+            'superstructures': rid_sample['superstructures'],
+            'depth': roofline_sample['depth'],
+            'lines': roofline_sample['lines']  # Now a single tensor [3, H, W]
+        }
+        
+        return features['image'], features
