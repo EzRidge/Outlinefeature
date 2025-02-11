@@ -98,18 +98,35 @@ class RoofDataset(Dataset):
         # Get image paths and verify files exist
         self.image_files = []
         for name in image_names:
-            img_path = self.img_dir / f"{name}.tif"
-            mask_path = self.mask_dir / f"{name}.png"
+            # Try both with and without leading zeros
+            possible_names = [
+                name,  # Original name
+                name.zfill(4),  # With leading zeros
+                name.lstrip('0')  # Without leading zeros
+            ]
             
-            if img_path.exists() and mask_path.exists():
-                self.image_files.append(img_path)
-            else:
-                if not img_path.exists():
-                    logging.warning(f"Image not found: {img_path}")
-                if not mask_path.exists():
-                    logging.warning(f"Mask not found: {mask_path}")
+            found = False
+            for possible_name in possible_names:
+                img_path = self.img_dir / f"{possible_name}.tif"
+                mask_path = self.mask_dir / f"{possible_name}.png"
+                
+                if img_path.exists() and mask_path.exists():
+                    self.image_files.append(img_path)
+                    found = True
+                    break
+            
+            if not found:
+                logging.warning(f"Could not find image/mask pair for {name}")
+                logging.warning(f"Tried:")
+                for possible_name in possible_names:
+                    logging.warning(f"- Image: {self.img_dir / f'{possible_name}.tif'}")
+                    logging.warning(f"- Mask: {self.mask_dir / f'{possible_name}.png'}")
         
         logging.info(f"Successfully loaded {len(self.image_files)} image/mask pairs")
+        if len(self.image_files) == 0:
+            logging.error("No valid image/mask pairs found!")
+            logging.error(f"Image directory contents: {list(self.img_dir.glob('*.tif'))[:5]}")
+            logging.error(f"Mask directory contents: {list(self.mask_dir.glob('*.png'))[:5]}")
         
     def _load_roofline_dataset(self):
         """Load Roofline dataset from .mat file."""
