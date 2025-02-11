@@ -92,12 +92,11 @@ class RoofDataset(Dataset):
             try:
                 with open(split_file, 'r') as f:
                     # Read lines and clean up filenames
-                    names = [line.strip() for line in f.readlines()]
-                    # Remove any file extensions
-                    names = [os.path.splitext(name)[0] for name in names]
-                    # Remove any remaining extensions (in case of double extensions)
-                    names = [os.path.splitext(name)[0] for name in names]
+                    names = [line.strip().rstrip('\r') for line in f.readlines()]
+                    # Remove .png extension from filenames
+                    names = [name[:-4] if name.endswith('.png') else name for name in names]
                     logging.info(f"Found {len(names)} filenames in {split_file}")
+                    logging.info(f"Example filenames: {names[:5]}")
                     image_names.update(names)
             except Exception as e:
                 logging.error(f"Error reading {split_file}: {str(e)}")
@@ -114,12 +113,8 @@ class RoofDataset(Dataset):
             
             found = False
             for possible_name in possible_names:
-                # Try both .tif and .png extensions for images
-                img_path = self.img_dir / f"{possible_name}.tif"
-                if not img_path.exists():
-                    img_path = self.img_dir / f"{possible_name}.png"
-                
-                mask_path = self.mask_dir / f"{possible_name}.png"
+                img_path = self.img_dir / f"{possible_name}.tif"  # Images are .tif
+                mask_path = self.mask_dir / f"{possible_name}.png"  # Masks are .png
                 
                 if img_path.exists() and mask_path.exists():
                     self.image_files.append(img_path)
@@ -131,8 +126,7 @@ class RoofDataset(Dataset):
                 logging.warning(f"Could not find image/mask pair for {name}")
                 logging.warning(f"Tried:")
                 for possible_name in possible_names:
-                    logging.warning(f"- Image (tif): {self.img_dir / f'{possible_name}.tif'}")
-                    logging.warning(f"- Image (png): {self.img_dir / f'{possible_name}.png'}")
+                    logging.warning(f"- Image: {self.img_dir / f'{possible_name}.tif'}")
                     logging.warning(f"- Mask: {self.mask_dir / f'{possible_name}.png'}")
         
         logging.info(f"Successfully loaded {len(self.image_files)} image/mask pairs")
@@ -153,7 +147,7 @@ class RoofDataset(Dataset):
             else:
                 logging.error(f"Mask directory does not exist: {self.mask_dir}")
             
-            # List some example files from split files
+            # List some example filenames
             logging.error("Example filenames from split files:")
             example_names = list(image_names)[:5]
             for name in example_names:
