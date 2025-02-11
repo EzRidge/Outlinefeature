@@ -8,6 +8,7 @@ import json
 from PIL import Image
 import scipy.io as sio
 import h5py
+import logging
 
 class RoofDataset(Dataset):
     """Base dataset class for roof model training."""
@@ -61,33 +62,55 @@ class RoofDataset(Dataset):
         """Load RID dataset with correct folder structure."""
         # Set up paths
         split_dir = self.data_dir / 'filenames_train_val_test_split'
-        image_dir = self.data_dir / 'images_annotation_experiment_geotiff'
+        self.img_dir = self.data_dir / 'images_annotation_experiment_geotiff'
         self.mask_dir = self.data_dir / 'masks_segments_reviewed'
         
-        # Load split filenames
-        split_files = {
-            'train': sorted(split_dir.glob(f'{self.split}_filenames_*_rev.txt')),
-            'val': sorted(split_dir.glob(f'{self.split}_filenames_*_rev.txt')),
-            'test': sorted(split_dir.glob(f'{self.split}_filenames_*_rev.txt'))
-        }[self.split]
+        logging.info(f"Loading RID dataset from:")
+        logging.info(f"- Split directory: {split_dir}")
+        logging.info(f"- Image directory: {self.img_dir}")
+        logging.info(f"- Mask directory: {self.mask_dir}")
+        
+        # Find split files for current split
+        split_pattern = f"{self.split}_filenames_*_rev.txt"
+        split_files = list(split_dir.glob(split_pattern))
+        logging.info(f"Found {len(split_files)} split files matching {split_pattern}")
+        
+        if not split_files:
+            raise RuntimeError(f"No split files found matching {split_pattern}")
         
         # Read filenames for current split
         image_names = set()
         for split_file in split_files:
-            with open(split_file, 'r') as f:
-                image_names.update(f.read().splitlines())
+            logging.info(f"Reading split file: {split_file}")
+            try:
+                with open(split_file, 'r') as f:
+                    names = f.read().splitlines()
+                    logging.info(f"Found {len(names)} filenames in {split_file}")
+                    image_names.update(names)
+            except Exception as e:
+                logging.error(f"Error reading {split_file}: {str(e)}")
         
-        # Get image paths
+        # Get image paths and verify files exist
         self.image_files = []
         for name in image_names:
-            img_path = image_dir / f"{name}.tif"
+            img_path = self.img_dir / f"{name}.tif"
             mask_path = self.mask_dir / f"{name}.png"
+            
             if img_path.exists() and mask_path.exists():
                 self.image_files.append(img_path)
+            else:
+                if not img_path.exists():
+                    logging.warning(f"Image not found: {img_path}")
+                if not mask_path.exists():
+                    logging.warning(f"Mask not found: {mask_path}")
+        
+        logging.info(f"Successfully loaded {len(self.image_files)} image/mask pairs")
         
     def _load_roofline_dataset(self):
         """Load Roofline dataset from .mat file."""
         mat_file = next(self.data_dir.glob('*.mat'))
+        logging.info(f"Loading Roofline dataset from: {mat_file}")
+        
         try:
             # Try loading as v7.3 .mat file
             with h5py.File(mat_file, 'r') as f:
@@ -100,8 +123,11 @@ class RoofDataset(Dataset):
                 else:
                     self.images = f['images'][split_idx:]
                     self.masks = f['masks'][split_idx:]
+                    
+                logging.info(f"Loaded {len(self.images)} samples from HDF5 .mat file")
         except:
             # Fall back to older .mat format
+            logging.info("Falling back to legacy .mat format")
             data = sio.loadmat(mat_file)
             total_samples = len(data['images'])
             split_idx = int(total_samples * 0.8)  # 80/20 split
@@ -112,6 +138,8 @@ class RoofDataset(Dataset):
             else:
                 self.images = data['images'][split_idx:]
                 self.masks = data['masks'][split_idx:]
+            
+            logging.info(f"Loaded {len(self.images)} samples from legacy .mat file")
         
         self.image_files = list(range(len(self.images)))
     
@@ -121,65 +149,83 @@ class RoofDataset(Dataset):
         image_dir = self.data_dir / self.split / 'image'
         mask_dir = self.data_dir / self.split / 'label'
         
+        logging.info(f"Loading AIRS dataset from:")
+        logging.info(f"- Image directory: {image_dir}")
+        logging.info(f"- Mask directory: {mask_dir}")
+        
         # Get all image files
         self.image_files = sorted(list(image_dir.glob('*.tif')))
         self.mask_dir = mask_dir
+        
+        logging.info(f"Found {len(self.image_files)} images")
     
     def load_image(self, img_path):
         """Load and preprocess image."""
-        if isinstance(img_path, Path):
-            # Handle .tif files for RID and AIRS
-            if str(img_path).endswith('.tif'):
-                image = cv2.imread(str(img_path))
-            else:
-                image = cv2.imread(str(img_path))
-        else:  # For Roofline dataset stored in memory
-            image = self.images[img_path]
+        try:
+            if isinstance(img_path, Path):
+                # Handle .tif files for RID and AIRS
+                if str(img_path).endswith('.tif'):
+                    image = cv2.imread(str(img_path))
+                else:
+                    image = cv2.imread(str(img_path))
+            else:  # For Roofline dataset stored in memory
+                image = self.images[img_path]
+                
+            if image is None:
+                raise RuntimeError(f"Failed to load image: {img_path}")
             
-        if image is None:
-            raise RuntimeError(f"Failed to load image: {img_path}")
-        
-        # Convert BGR to RGB
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        
-        # Resize if needed
-        if image.shape[:2] != (self.image_size, self.image_size):
-            image = cv2.resize(image, (self.image_size, self.image_size))
-        
-        # Normalize to [0, 1]
-        image = image.astype(np.float32) / 255.0
-        
-        # Convert to tensor and rearrange channels
-        image = torch.from_numpy(image).permute(2, 0, 1)
-        
-        return image
+            # Convert BGR to RGB
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            
+            # Resize if needed
+            if image.shape[:2] != (self.image_size, self.image_size):
+                image = cv2.resize(image, (self.image_size, self.image_size))
+            
+            # Normalize to [0, 1]
+            image = image.astype(np.float32) / 255.0
+            
+            # Convert to tensor and rearrange channels
+            image = torch.from_numpy(image).permute(2, 0, 1)
+            
+            return image
+            
+        except Exception as e:
+            logging.error(f"Error loading image {img_path}: {str(e)}")
+            raise
     
     def load_mask(self, img_path):
         """Load and process segmentation mask."""
-        if isinstance(img_path, Path):
-            if self.dataset_type == 'airs':
-                # AIRS masks are in label directory
-                mask_path = self.mask_dir / f"{img_path.stem}_label.png"
-            elif self.dataset_type == 'rid':
-                # RID masks are in masks_segments_reviewed directory
-                mask_path = self.mask_dir / f"{img_path.stem}.png"
-            else:
-                mask_path = img_path.with_suffix('.png')
-            mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
-        else:  # For Roofline dataset stored in memory
-            mask = self.masks[img_path]
+        try:
+            if isinstance(img_path, Path):
+                if self.dataset_type == 'airs':
+                    # AIRS masks are in label directory
+                    mask_path = self.mask_dir / f"{img_path.stem}_label.png"
+                elif self.dataset_type == 'rid':
+                    # RID masks are in masks_segments_reviewed directory
+                    mask_path = self.mask_dir / f"{img_path.stem}.png"
+                else:
+                    mask_path = img_path.with_suffix('.png')
+                    
+                logging.debug(f"Loading mask from: {mask_path}")
+                mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+            else:  # For Roofline dataset stored in memory
+                mask = self.masks[img_path]
+                
+            if mask is None:
+                raise RuntimeError(f"Failed to load mask: {mask_path if isinstance(img_path, Path) else img_path}")
             
-        if mask is None:
-            raise RuntimeError(f"Failed to load mask: {mask_path if isinstance(img_path, Path) else img_path}")
-        
-        # Resize if needed
-        if mask.shape[:2] != (self.image_size, self.image_size):
-            mask = cv2.resize(mask, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
-        
-        # Convert to tensor
-        mask = torch.from_numpy(mask).long()
-        
-        return mask
+            # Resize if needed
+            if mask.shape[:2] != (self.image_size, self.image_size):
+                mask = cv2.resize(mask, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
+            
+            # Convert to tensor
+            mask = torch.from_numpy(mask).long()
+            
+            return mask
+            
+        except Exception as e:
+            logging.error(f"Error loading mask for {img_path}: {str(e)}")
+            raise
     
     def create_line_mask(self, mask):
         """Create line detection masks from segmentation mask."""
@@ -253,7 +299,7 @@ class RoofDataset(Dataset):
             return image, features
             
         except Exception as e:
-            print(f"Error loading sample {img_path}: {str(e)}")
+            logging.error(f"Error loading sample {img_path}: {str(e)}")
             # Return a dummy sample in case of error
             return self.__getitem__((idx + 1) % len(self))
 
@@ -270,6 +316,9 @@ def create_dataloaders(dataset_path, dataset_type, batch_size=16, num_workers=4)
     Returns:
         train_loader, val_loader: DataLoader objects
     """
+    logging.info(f"Creating dataloaders for {dataset_type} dataset")
+    logging.info(f"Dataset path: {dataset_path}")
+    
     # Create datasets
     train_dataset = RoofDataset(dataset_path, dataset_type, split='train')
     val_dataset = RoofDataset(dataset_path, dataset_type, split='val')
@@ -290,5 +339,9 @@ def create_dataloaders(dataset_path, dataset_type, batch_size=16, num_workers=4)
         num_workers=num_workers,
         pin_memory=True
     )
+    
+    logging.info(f"Created dataloaders:")
+    logging.info(f"- Training samples: {len(train_dataset)}")
+    logging.info(f"- Validation samples: {len(val_dataset)}")
     
     return train_loader, val_loader
