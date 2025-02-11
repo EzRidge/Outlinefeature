@@ -60,15 +60,22 @@ class RoofDataset(Dataset):
     
     def _load_rid_dataset(self):
         """Load RID dataset with correct folder structure."""
-        # Set up paths
+        # Set up paths for RID dataset subfolders
         split_dir = self.data_dir / 'filenames_train_val_test_split'
         self.img_dir = self.data_dir / 'images_annotation_experiment_geotiff'
         self.mask_dir = self.data_dir / 'masks_segments_reviewed'
         
         logging.info(f"Loading RID dataset from:")
+        logging.info(f"- Base directory: {self.data_dir}")
         logging.info(f"- Split directory: {split_dir}")
         logging.info(f"- Image directory: {self.img_dir}")
         logging.info(f"- Mask directory: {self.mask_dir}")
+        
+        # List all directories to verify structure
+        logging.info("Available directories:")
+        for item in self.data_dir.iterdir():
+            if item.is_dir():
+                logging.info(f"- {item.name}/")
         
         # Find split files for current split
         split_pattern = f"{self.split}_filenames_*_rev.txt"
@@ -126,8 +133,20 @@ class RoofDataset(Dataset):
         logging.info(f"Successfully loaded {len(self.image_files)} image/mask pairs")
         if len(self.image_files) == 0:
             logging.error("No valid image/mask pairs found!")
-            logging.error(f"Image directory contents: {list(self.img_dir.glob('*.tif'))[:5]}")
-            logging.error(f"Mask directory contents: {list(self.mask_dir.glob('*.png'))[:5]}")
+            logging.error("Directory contents:")
+            if self.img_dir.exists():
+                logging.error(f"Image directory ({self.img_dir}):")
+                for f in self.img_dir.glob('*'):
+                    logging.error(f"  {f.name}")
+            else:
+                logging.error(f"Image directory does not exist: {self.img_dir}")
+            
+            if self.mask_dir.exists():
+                logging.error(f"Mask directory ({self.mask_dir}):")
+                for f in self.mask_dir.glob('*'):
+                    logging.error(f"  {f.name}")
+            else:
+                logging.error(f"Mask directory does not exist: {self.mask_dir}")
         
     def _load_roofline_dataset(self):
         """Load Roofline dataset from .mat file."""
