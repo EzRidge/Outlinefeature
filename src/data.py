@@ -114,8 +114,12 @@ class RoofDataset(Dataset):
             
             found = False
             for possible_name in possible_names:
-                img_path = self.img_dir / f"{possible_name}.tif"  # Images are .tif
-                mask_path = self.mask_dir / f"{possible_name}.png"  # Masks are .png
+                # Try both .tif and .png extensions for images
+                img_path = self.img_dir / f"{possible_name}.tif"
+                if not img_path.exists():
+                    img_path = self.img_dir / f"{possible_name}.png"
+                
+                mask_path = self.mask_dir / f"{possible_name}.png"
                 
                 if img_path.exists() and mask_path.exists():
                     self.image_files.append(img_path)
@@ -127,7 +131,8 @@ class RoofDataset(Dataset):
                 logging.warning(f"Could not find image/mask pair for {name}")
                 logging.warning(f"Tried:")
                 for possible_name in possible_names:
-                    logging.warning(f"- Image: {self.img_dir / f'{possible_name}.tif'}")
+                    logging.warning(f"- Image (tif): {self.img_dir / f'{possible_name}.tif'}")
+                    logging.warning(f"- Image (png): {self.img_dir / f'{possible_name}.png'}")
                     logging.warning(f"- Mask: {self.mask_dir / f'{possible_name}.png'}")
         
         logging.info(f"Successfully loaded {len(self.image_files)} image/mask pairs")
@@ -147,6 +152,12 @@ class RoofDataset(Dataset):
                     logging.error(f"  {f.name}")
             else:
                 logging.error(f"Mask directory does not exist: {self.mask_dir}")
+            
+            # List some example files from split files
+            logging.error("Example filenames from split files:")
+            example_names = list(image_names)[:5]
+            for name in example_names:
+                logging.error(f"  {name}")
         
     def _load_roofline_dataset(self):
         """Load Roofline dataset from .mat file."""
