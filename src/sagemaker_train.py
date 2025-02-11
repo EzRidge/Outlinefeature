@@ -59,11 +59,15 @@ def train_epoch(model, train_loader, optimizer, device, dataset_type):
     for batch_idx, (images, targets) in enumerate(train_loader):
         # Move data to device
         images = images.to(device)
-        targets = {k: v.to(device) for k, v in targets.items()}
+        # Only move tensor values to device
+        device_targets = {
+            k: v.to(device) if isinstance(v, torch.Tensor) else v
+            for k, v in targets.items()
+        }
         
         # Forward pass
         predictions = model(images)
-        loss, losses_dict = model.criterion(predictions, targets)
+        loss, losses_dict = model.criterion(predictions, device_targets)
         
         # Backward pass
         optimizer.zero_grad()
@@ -91,11 +95,15 @@ def validate(model, val_loader, device, dataset_type):
         for images, targets in val_loader:
             # Move data to device
             images = images.to(device)
-            targets = {k: v.to(device) for k, v in targets.items()}
+            # Only move tensor values to device
+            device_targets = {
+                k: v.to(device) if isinstance(v, torch.Tensor) else v
+                for k, v in targets.items()
+            }
             
             # Forward pass
             predictions = model(images)
-            loss, _ = model.criterion(predictions, targets)
+            loss, _ = model.criterion(predictions, device_targets)
             
             # Update total loss
             total_loss += loss.item()
