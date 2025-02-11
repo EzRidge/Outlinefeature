@@ -84,7 +84,12 @@ class RoofDataset(Dataset):
             logging.info(f"Reading split file: {split_file}")
             try:
                 with open(split_file, 'r') as f:
-                    names = f.read().splitlines()
+                    # Read lines and clean up filenames
+                    names = [line.strip() for line in f.readlines()]
+                    # Remove any file extensions from the names
+                    names = [os.path.splitext(name)[0] for name in names]
+                    # Remove any remaining extensions (in case of double extensions)
+                    names = [os.path.splitext(name)[0] for name in names]
                     logging.info(f"Found {len(names)} filenames in {split_file}")
                     image_names.update(names)
             except Exception as e:
