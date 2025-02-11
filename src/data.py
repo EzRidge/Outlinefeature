@@ -86,7 +86,7 @@ class RoofDataset(Dataset):
                 with open(split_file, 'r') as f:
                     # Read lines and clean up filenames
                     names = [line.strip() for line in f.readlines()]
-                    # Remove any file extensions from the names
+                    # Remove any file extensions
                     names = [os.path.splitext(name)[0] for name in names]
                     # Remove any remaining extensions (in case of double extensions)
                     names = [os.path.splitext(name)[0] for name in names]
@@ -107,12 +107,13 @@ class RoofDataset(Dataset):
             
             found = False
             for possible_name in possible_names:
-                img_path = self.img_dir / f"{possible_name}.tif"
-                mask_path = self.mask_dir / f"{possible_name}.png"
+                img_path = self.img_dir / f"{possible_name}.tif"  # Images are .tif
+                mask_path = self.mask_dir / f"{possible_name}.png"  # Masks are .png
                 
                 if img_path.exists() and mask_path.exists():
                     self.image_files.append(img_path)
                     found = True
+                    logging.info(f"Found image/mask pair: {img_path.name}")
                     break
             
             if not found:
