@@ -31,6 +31,25 @@ def parse_args():
     args, _ = parser.parse_known_args()
     return args
 
+def list_directory_contents(path, indent=""):
+    """Helper function to recursively list directory contents"""
+    if not os.path.exists(path):
+        return f"{path} does not exist"
+    
+    result = []
+    try:
+        for item in os.listdir(path):
+            item_path = os.path.join(path, item)
+            if os.path.isdir(item_path):
+                result.append(f"{indent}{item}/")
+                result.extend(list_directory_contents(item_path, indent + "  "))
+            else:
+                result.append(f"{indent}{item}")
+    except Exception as e:
+        result.append(f"Error reading {path}: {str(e)}")
+    
+    return result
+
 def train_epoch(model, train_loader, criterion, optimizer, device, dataset_type):
     """Train for one epoch"""
     model.train()
@@ -86,6 +105,11 @@ def validate(model, val_loader, criterion, device, dataset_type):
 def train_on_dataset(model, dataset_path, dataset_type, args, device, start_epoch=0):
     """Train model on a specific dataset"""
     logging.info(f"\nStarting training on {dataset_type} dataset")
+    logging.info(f"Dataset path: {dataset_path}")
+    logging.info("Directory contents:")
+    contents = list_directory_contents(dataset_path)
+    for line in contents:
+        logging.info(line)
     
     # Create dataloaders for this dataset
     train_loader, val_loader = create_dataloaders(
@@ -149,6 +173,12 @@ def train(args):
     )
     
     try:
+        # Log all input directories
+        logging.info("Input directories:")
+        logging.info(f"RID dir: {args.rid_dir}")
+        logging.info(f"Roofline dir: {args.roofline_dir}")
+        logging.info(f"AIRS dir: {args.airs_dir}")
+        
         # Initialize result manager
         result_manager = ResultManager(os.path.join(args.model_dir, 'results'))
         
