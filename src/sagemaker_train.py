@@ -50,7 +50,7 @@ def list_directory_contents(path, indent=""):
     
     return result
 
-def train_epoch(model, train_loader, criterion, optimizer, device, dataset_type):
+def train_epoch(model, train_loader, optimizer, device, dataset_type):
     """Train for one epoch"""
     model.train()
     total_loss = 0
@@ -63,7 +63,7 @@ def train_epoch(model, train_loader, criterion, optimizer, device, dataset_type)
         
         # Forward pass
         predictions = model(images)
-        loss, losses_dict = criterion(predictions, targets, dataset_type)
+        loss, losses_dict = model.criterion(predictions, targets)
         
         # Backward pass
         optimizer.zero_grad()
@@ -81,7 +81,7 @@ def train_epoch(model, train_loader, criterion, optimizer, device, dataset_type)
     
     return total_loss / num_batches
 
-def validate(model, val_loader, criterion, device, dataset_type):
+def validate(model, val_loader, device, dataset_type):
     """Validate the model"""
     model.eval()
     total_loss = 0
@@ -95,7 +95,7 @@ def validate(model, val_loader, criterion, device, dataset_type):
             
             # Forward pass
             predictions = model(images)
-            loss, _ = criterion(predictions, targets, dataset_type)
+            loss, _ = model.criterion(predictions, targets)
             
             # Update total loss
             total_loss += loss.item()
@@ -141,8 +141,8 @@ def train_on_dataset(model, dataset_path, dataset_type, args, device, start_epoc
         logging.info(f"\nEpoch [{epoch + 1}/{epochs}] ({dataset_type})")
         
         # Train and validate
-        train_loss = train_epoch(model, train_loader, model.criterion, optimizer, device, dataset_type)
-        val_loss = validate(model, val_loader, model.criterion, device, dataset_type)
+        train_loss = train_epoch(model, train_loader, optimizer, device, dataset_type)
+        val_loss = validate(model, val_loader, device, dataset_type)
         
         logging.info(f"Training Loss: {train_loss:.4f}")
         logging.info(f"Validation Loss: {val_loss:.4f}")
@@ -186,6 +186,7 @@ def train(args):
         logging.info("Initializing model...")
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model, criterion = create_model(num_classes=args.num_classes)
+        model.criterion = criterion  # Assign criterion to model
         model = model.to(device)
         
         # Sequential training on each dataset
