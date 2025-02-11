@@ -44,7 +44,7 @@ class RoofDataset(Dataset):
             'unknown': 11
         }
         self.num_classes = len(self.class_mapping)
-        self.image_size = 1024
+        self.image_size = 512  # Reduced from 1024 to 512
         
         # Load dataset based on type
         if dataset_type == 'rid':
@@ -350,7 +350,7 @@ class RoofDataset(Dataset):
             # Return a dummy sample in case of error
             return self.__getitem__((idx + 1) % len(self))
 
-def create_dataloaders(dataset_path, dataset_type, batch_size=16, num_workers=4):
+def create_dataloaders(dataset_path, dataset_type, batch_size=4, num_workers=4):  # Reduced batch size from 16 to 4
     """
     Create training and validation dataloaders for a specific dataset.
     
