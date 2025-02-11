@@ -2,19 +2,23 @@
 numpy>=1.19.3
 matplotlib>=3.4.0
 pillow>=8.0.0
+opencv-python-headless>=4.5.0  # Headless version for server deployment
 
 # Deep learning
 torch>=1.9.0
 torchvision>=0.10.0
+albumentations>=1.0.0  # For advanced image augmentations
 
 # Data processing
 rasterio>=1.2.0  # For GeoTIFF handling
 h5py>=3.2.1     # For MATLAB file handling
 scipy>=1.7.0    # For scientific computing
 pandas>=1.3.0   # For data manipulation
+scikit-image>=0.18.0  # For advanced image processing
 
 # Visualization
 tqdm>=4.62.0    # For progress bars
+seaborn>=0.11.0 # For enhanced plotting
 
 # Network/Download
 requests>=2.26.0
@@ -26,7 +30,12 @@ sagemaker-pytorch-training>=2.0.0
 # AWS utilities
 boto3>=1.26.0
 s3fs>=2023.1.0  # For S3 file system operations
+awscli>=1.27.0  # AWS command line interface
 
 # Development tools
 jupyter>=1.0.0
 ipython>=7.0.0
+
+# Monitoring and logging
+tensorboard>=2.8.0  # For training visualization
+wandb>=0.12.0      # For experiment tracking
