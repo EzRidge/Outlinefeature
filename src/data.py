@@ -268,6 +268,13 @@ class RoofDataset(Dataset):
             # Convert to tensor
             mask = torch.from_numpy(mask).long()
             
+            # Remap mask values for RID dataset
+            if self.dataset_type == 'rid':
+                # Original RID masks have values 0-17 for azimuth classes
+                # Map all non-zero values to 1 (roof) for now
+                # Later we can add more sophisticated mapping
+                mask = (mask > 0).long()  # Convert to binary mask (0: background, 1: roof)
+            
             return mask
             
         except Exception as e:
