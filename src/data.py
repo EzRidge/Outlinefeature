@@ -62,7 +62,7 @@ class RoofDataset(Dataset):
         """Load RID dataset with correct folder structure."""
         # Set up paths for RID dataset subfolders
         split_dir = self.data_dir / 'filenames_train_val_test_split'
-        self.img_dir = self.data_dir / 'images_annotation_experiment_geotiff'
+        self.img_dir = self.data_dir / 'images_roof_centered_geotiff'  # Use the full 1880 images
         self.mask_dir = self.data_dir / 'masks_segments_reviewed'
         
         logging.info(f"Loading RID dataset from:")
