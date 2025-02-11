@@ -6,54 +6,105 @@ from pathlib import Path
 import os
 import json
 from PIL import Image
+import scipy.io as sio
 
-class UnifiedRoofDataset(Dataset):
-    """Dataset for unified roof model training with multiple datasets."""
+class RoofDataset(Dataset):
+    """Base dataset class for roof model training."""
     
-    def __init__(self, data_dir, split='train', transform=None):
+    def __init__(self, data_dir, dataset_type, split='train', transform=None):
         """
-        Initialize the unified dataset.
+        Initialize the dataset.
         
         Args:
-            data_dir (str): Path to the processed unified dataset
+            data_dir (str): Path to the dataset
+            dataset_type (str): Type of dataset ('rid', 'roofline', or 'airs')
             split (str): Either 'train' or 'val'
             transform: Optional transforms to apply
         """
         super().__init__()
         self.data_dir = Path(data_dir)
+        self.dataset_type = dataset_type
         self.split = split
         self.transform = transform
         
-        # Set up paths
-        self.img_dir = self.data_dir / split / 'images'
-        self.mask_dir = self.data_dir / split / 'masks'
+        # Unified class mapping for all datasets
+        self.class_mapping = {
+            'roof': 1,
+            'ridge': 2,
+            'valley': 3,
+            'eave': 4,
+            'dormer': 5,
+            'chimney': 6,
+            'window': 7,
+            'pv_module': 8,
+            'shadow': 9,
+            'tree': 10,
+            'unknown': 11
+        }
+        self.num_classes = len(self.class_mapping)
+        self.image_size = 1024
         
-        # Load metadata
-        with open(self.data_dir / 'metadata.json', 'r') as f:
-            self.metadata = json.load(f)
+        # Load dataset based on type
+        if dataset_type == 'rid':
+            self._load_rid_dataset()
+        elif dataset_type == 'roofline':
+            self._load_roofline_dataset()
+        elif dataset_type == 'airs':
+            self._load_airs_dataset()
+        else:
+            raise ValueError(f"Unknown dataset type: {dataset_type}")
         
-        self.class_mapping = self.metadata['class_mapping']
-        self.num_classes = self.metadata['num_classes']
-        self.image_size = self.metadata['image_size']
-        
-        # Get all image files
-        self.image_files = sorted(list(self.img_dir.glob('*.jpg')))
-        if not self.image_files:
-            raise RuntimeError(f"No images found in {self.img_dir}")
-        
-        print(f"Loaded {len(self.image_files)} images for {split} split")
+        print(f"Loaded {len(self.image_files)} images from {dataset_type} dataset ({split} split)")
     
-    def __len__(self):
-        return len(self.image_files)
+    def _load_rid_dataset(self):
+        """Load RID dataset - focuses on general roof segmentation."""
+        self.img_dir = self.data_dir / 'images'
+        self.mask_dir = self.data_dir / 'masks'
+        self.image_files = sorted(list(self.img_dir.glob('*.jpg')))
+        
+    def _load_roofline_dataset(self):
+        """Load Roofline dataset - specializes in line detection."""
+        mat_file = next(self.data_dir.glob('*.mat'))
+        try:
+            data = sio.loadmat(mat_file)
+            # Split data for train/val
+            total_samples = len(data['images'])
+            split_idx = int(total_samples * 0.8)  # 80/20 split
+            
+            if self.split == 'train':
+                self.images = data['images'][:split_idx]
+                self.masks = data['masks'][:split_idx]
+            else:
+                self.images = data['images'][split_idx:]
+                self.masks = data['masks'][split_idx:]
+                
+            self.image_files = list(range(len(self.images)))
+        except Exception as e:
+            raise RuntimeError(f"Failed to load Roofline .mat file: {mat_file}. Error: {str(e)}")
+    
+    def _load_airs_dataset(self):
+        """Load AIRS dataset - strong on building footprints."""
+        split_dir = self.data_dir / self.split
+        self.img_dir = split_dir / 'images'
+        self.mask_dir = split_dir / 'masks'
+        self.image_files = sorted(list(self.img_dir.glob('*.jpg')))
     
     def load_image(self, img_path):
         """Load and preprocess image."""
-        image = cv2.imread(str(img_path))
+        if isinstance(img_path, Path):
+            image = cv2.imread(str(img_path))
+        else:  # For Roofline dataset stored in memory
+            image = self.images[img_path]
+            
         if image is None:
             raise RuntimeError(f"Failed to load image: {img_path}")
         
         # Convert BGR to RGB
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        # Resize if needed
+        if image.shape[:2] != (self.image_size, self.image_size):
+            image = cv2.resize(image, (self.image_size, self.image_size))
         
         # Normalize to [0, 1]
         image = image.astype(np.float32) / 255.0
@@ -65,9 +116,17 @@ class UnifiedRoofDataset(Dataset):
     
     def load_mask(self, mask_path):
         """Load and process segmentation mask."""
-        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        if isinstance(mask_path, Path):
+            mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        else:  # For Roofline dataset stored in memory
+            mask = self.masks[mask_path]
+            
         if mask is None:
             raise RuntimeError(f"Failed to load mask: {mask_path}")
+        
+        # Resize if needed
+        if mask.shape[:2] != (self.image_size, self.image_size):
+            mask = cv2.resize(mask, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
         
         # Convert to tensor
         mask = torch.from_numpy(mask).long()
@@ -76,7 +135,6 @@ class UnifiedRoofDataset(Dataset):
     
     def create_line_mask(self, mask):
         """Create line detection masks from segmentation mask."""
-        # Initialize line masks for ridge, valley, eave, and outline
         h, w = mask.shape
         lines = torch.zeros(4, h, w)
         
@@ -99,10 +157,7 @@ class UnifiedRoofDataset(Dataset):
         return lines
     
     def estimate_depth(self, mask):
-        """
-        Estimate pseudo-depth from segmentation mask.
-        This is a simple heuristic until we have real depth data.
-        """
+        """Estimate pseudo-depth from segmentation mask."""
         h, w = mask.shape
         depth = torch.zeros(h, w)
         
@@ -118,15 +173,21 @@ class UnifiedRoofDataset(Dataset):
         
         return depth
     
+    def __len__(self):
+        return len(self.image_files)
+    
     def __getitem__(self, idx):
         """Get a single item from the dataset."""
-        img_path = self.image_files[idx]
-        mask_path = self.mask_dir / f"{img_path.stem}_mask.png"
-        
         try:
             # Load image and mask
-            image = self.load_image(img_path)
-            mask = self.load_mask(mask_path)
+            if self.dataset_type == 'roofline':
+                image = self.load_image(idx)
+                mask = self.load_mask(idx)
+            else:
+                img_path = self.image_files[idx]
+                mask_path = self.mask_dir / f"{img_path.stem}_mask.png"
+                image = self.load_image(img_path)
+                mask = self.load_mask(mask_path)
             
             # Create line detection masks
             lines = self.create_line_mask(mask)
@@ -142,22 +203,24 @@ class UnifiedRoofDataset(Dataset):
             features = {
                 'segments': mask,
                 'lines': lines,
-                'depth': depth
+                'depth': depth,
+                'dataset_type': self.dataset_type  # Include dataset type for specialized loss
             }
             
             return image, features
             
         except Exception as e:
-            print(f"Error loading sample {img_path}: {str(e)}")
+            print(f"Error loading sample {idx}: {str(e)}")
             # Return a dummy sample in case of error
             return self.__getitem__((idx + 1) % len(self))
 
-def create_dataloaders(data_dir, batch_size=16, num_workers=4):
+def create_dataloaders(dataset_path, dataset_type, batch_size=16, num_workers=4):
     """
-    Create training and validation dataloaders.
+    Create training and validation dataloaders for a specific dataset.
     
     Args:
-        data_dir (str): Path to processed dataset
+        dataset_path (str): Path to dataset
+        dataset_type (str): Type of dataset ('rid', 'roofline', or 'airs')
         batch_size (int): Batch size for training
         num_workers (int): Number of worker processes
         
@@ -165,8 +228,8 @@ def create_dataloaders(data_dir, batch_size=16, num_workers=4):
         train_loader, val_loader: DataLoader objects
     """
     # Create datasets
-    train_dataset = UnifiedRoofDataset(data_dir, split='train')
-    val_dataset = UnifiedRoofDataset(data_dir, split='val')
+    train_dataset = RoofDataset(dataset_path, dataset_type, split='train')
+    val_dataset = RoofDataset(dataset_path, dataset_type, split='val')
     
     # Create dataloaders
     train_loader = torch.utils.data.DataLoader(
