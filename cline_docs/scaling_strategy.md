@@ -1,167 +1,191 @@
-# SageMaker Training: Testing and Scaling Strategy
+# Training and Scaling Strategy
 
-## Current Configuration (Minimal Test)
+## Phase 0: Local Development Setup
 
-### Hardware
-- Instance: ml.m5.xlarge (CPU)
-- Memory: 16 GB
-- vCPUs: 4
+### Environment
+- Anaconda/JupyterLab on local machine
+- PyTorch with CUDA support
+- Required dependencies from requirements.txt
 
-### Training Parameters
-- Image size: 512x512 (reduced from 1024x1024)
-- Batch size: 2 (minimal)
-- Workers: 2 (minimal)
-- Max samples: 10 per dataset
-- Datasets: RID only
-- Epochs: 1 per dataset
+### Goals
+1. Test each dataset individually
+2. Verify data loading and processing
+3. Debug any issues quickly
+4. Establish baseline metrics
 
-## Scaling Strategy
+### Testing Order
+1. RID Dataset (Segmentation)
+   - Basic segmentation masks
+   - Binary classification (roof/non-roof)
+   - Verify output format
 
-### Phase 1: Sample Size Scaling
-Goal: Verify model can handle more data without memory issues
-1. Increase to 20 samples
-   - Watch: Memory usage, training time
-   - Expect: ~2x training time
-   - Success criteria: No OOM errors, stable loss
+2. Roofline Dataset (Lines)
+   - Line detection features
+   - Ridge, valley, eave detection
+   - Verify output format
 
-2. Increase to 50 samples
-   - Watch: Memory usage, training time, loss convergence
-   - Expect: ~2.5x training time from 20 samples
-   - Success criteria: Smooth loss curve
+3. AIRS Dataset (Outlines)
+   - Building outline detection
+   - Boundary refinement
+   - Verify output format
 
-3. Increase to 100 samples
-   - Watch: Memory usage, training time, loss convergence
-   - Expect: ~2x training time from 50 samples
-   - Success criteria: Clear learning progress
+## Phase 1: Dataset Integration
 
-### Phase 2: Batch Size Optimization
-Goal: Find optimal batch size for current hardware
-1. Increase to batch size 4
-   - Watch: Memory usage, training speed (samples/second)
-   - Expect: Faster training, higher memory usage
-   - Success criteria: Training speed improvement
+### Goals
+1. Verify each dataset works correctly
+2. Test data loading pipeline
+3. Validate model outputs
+4. Check memory usage patterns
 
-2. Increase to batch size 8
-   - Watch: Memory usage, training speed, loss stability
-   - Expect: Further speed improvement if memory allows
-   - Success criteria: No OOM errors
+### Steps for Each Dataset
+1. Minimal Test (10 samples)
+   - Batch size: 2
+   - Workers: 2
+   - Image size: 512x512
+   - Success criteria: Clean training run
 
-3. Test batch size 16 (if memory allows)
-   - Watch: Memory usage, training speed, loss stability
-   - Success criteria: Stable training, good memory margin
+2. Basic Validation
+   - Check output formats
+   - Verify loss calculations
+   - Monitor memory usage
+   - Document any issues
 
-### Phase 3: Worker Optimization
-Goal: Maximize CPU utilization
-1. Increase to 4 workers
-   - Watch: CPU usage, data loading speed
-   - Expect: Faster data loading
-   - Success criteria: Higher CPU utilization
+3. Integration Test
+   - Test dataset transitions
+   - Verify weight updates
+   - Check save/load functionality
 
-2. Monitor system metrics
-   - CPU utilization
-   - I/O wait times
-   - Memory usage
-   - Success criteria: Balanced resource usage
+## Phase 2: SageMaker Migration
 
-### Phase 4: Dataset Integration
-Goal: Test multi-dataset training
-1. Add Roofline dataset
-   - Watch: Memory usage during transitions
-   - Expect: Similar performance to RID
-   - Success criteria: Smooth dataset transition
+### Preparation
+1. Package working code
+2. Update SageMaker script
+3. Configure GPU instance
+4. Set up monitoring
 
-2. Add AIRS dataset
-   - Watch: Memory usage, training stability
-   - Expect: Similar performance to other datasets
-   - Success criteria: Consistent performance across datasets
+### Initial GPU Test
+1. Use G5 instance
+2. Start with minimal configuration
+3. Verify GPU utilization
+4. Check memory patterns
 
-### Phase 5: GPU Migration (G5 Instance)
-Goal: Scale up to full training
-1. Initial GPU test
-   - Use current best configuration
-   - Watch: GPU memory usage, training speed
-   - Expect: Significant speed improvement
-   - Success criteria: Stable GPU training
+### Scaling Up
+1. Increase image size to 1024x1024
+2. Scale batch size for GPU
+3. Enable mixed precision
+4. Optimize workers
 
-2. GPU optimization
-   - Increase batch size for GPU
-   - Restore 1024x1024 image size
-   - Enable mixed precision training
-   - Success criteria: Optimal GPU utilization
+## Phase 3: Full Training
 
-3. Full dataset training
-   - Remove max_samples limit
-   - Use all datasets
-   - Multiple epochs
-   - Success criteria: Complete training pipeline
+### Configuration
+- Instance: ml.g5.xlarge or larger
+- Image size: 1024x1024
+- Batch size: 16+
+- Full datasets
+- Multiple epochs
 
-## Metrics to Watch
+### Monitoring
+1. GPU utilization
+2. Memory usage
+3. Training metrics
+4. Model performance
 
-### System Metrics
-- Memory usage (should stay below 80%)
-- CPU/GPU utilization
-- Disk I/O
-- Network I/O (for data loading)
+### Optimization
+1. Mixed precision training
+2. Gradient accumulation
+3. Learning rate scheduling
+4. Weight initialization
 
-### Training Metrics
-- Loss values (training and validation)
-- Training speed (samples/second)
-- Time per epoch
-- Model accuracy metrics
+## Success Criteria
 
-### Resource Efficiency
-- Memory per sample
-- Processing time per sample
-- GPU memory utilization (when applicable)
+### Local Development
+- [x] RID dataset working
+- [ ] Roofline dataset working
+- [ ] AIRS dataset working
+- [ ] Clean data loading
+- [ ] Proper output formats
 
-## Success Criteria for GPU Migration
+### SageMaker Training
+- [ ] Successful GPU migration
+- [ ] Stable training
+- [ ] Good GPU utilization
+- [ ] Expected metrics
 
-Before moving to G5 instance:
-1. Stable training on CPU with:
-   - At least 100 samples
-   - Batch size ≥ 8
-   - All datasets working
-   - No memory issues
-
-2. Clear understanding of:
-   - Memory requirements per sample
-   - Optimal batch size
-   - Dataset loading patterns
-   - Training time expectations
+### Model Performance
+- [ ] Accurate segmentation
+- [ ] Clean line detection
+- [ ] Precise outlines
+- [ ] Reasonable depth maps
 
 ## Documentation Updates
 
-After each phase:
-1. Update this document with:
-   - Actual results vs expectations
-   - Any issues encountered
-   - Solutions implemented
-   - Recommendations for next phase
+### For Each Phase
+1. Update training metrics
+2. Document any issues
+3. Record solutions
+4. Update success criteria
 
-2. Update hyperparameters in notebook:
-   - Document successful configurations
-   - Note any failed attempts
-   - Record performance metrics
+### Final Documentation
+1. Training process
+2. Model usage
+3. Integration guide
+4. Best practices
 
 ## Rollback Plan
 
-If issues occur:
-1. Return to last working configuration
-2. Document the issue
-3. Analyze logs and metrics
-4. Make smaller incremental changes
+### Local Development
+1. Save working configurations
+2. Document environment setup
+3. Keep test datasets
+4. Version control code
 
-## Final Configuration Target
+### SageMaker Migration
+1. Keep CPU fallback
+2. Save working states
+3. Monitor costs
+4. Document procedures
 
-### Hardware
-- Instance: ml.g5.xlarge or larger
-- GPU: NVIDIA A10G
-- Memory: 24GB+
+## Timeline
 
-### Training Parameters
-- Image size: 1024x1024
-- Batch size: 16+
-- Workers: 4+
-- Samples: Full dataset
-- Datasets: All (RID, Roofline, AIRS)
-- Epochs: Multiple per dataset
+### Week 1: Local Development
+- Set up environment
+- Test individual datasets
+- Debug and optimize
+- Document progress
+
+### Week 2: SageMaker Setup
+- Migrate to GPU
+- Scale up training
+- Monitor performance
+- Validate results
+
+### Week 3: Full Training
+- Run complete pipeline
+- Generate metrics
+- Create visualizations
+- Document usage
+
+## Final Deliverables
+
+1. Trained Model
+   - Weights file
+   - Configuration
+   - Performance metrics
+
+2. Documentation
+   - Training process
+   - Usage guide
+   - Integration steps
+   - Best practices
+
+3. Code
+   - Training scripts
+   - Inference code
+   - Utility functions
+   - Example notebooks
+
+4. Deployment
+   - Docker container
+   - API service
+   - CLI tools
+   - Testing suite
