@@ -1,6 +1,7 @@
 import logging
 import torch
 from .rid_dataset import RIDDataset
+from .roofline_dataset import RooflineDataset
 
 def create_dataloaders(dataset_path, dataset_type, batch_size=4, num_workers=4, max_samples=None):
     """
@@ -24,8 +25,8 @@ def create_dataloaders(dataset_path, dataset_type, batch_size=4, num_workers=4, 
     # Select dataset class based on type
     dataset_classes = {
         'rid': RIDDataset,
-        # 'roofline': RooflineDataset,  # To be added
-        # 'airs': AIRSDataset,          # To be added
+        'roofline': RooflineDataset,
+        # 'airs': AIRSDataset,  # To be added
     }
     
     if dataset_type not in dataset_classes:
