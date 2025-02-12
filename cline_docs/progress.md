@@ -1,6 +1,6 @@
 # Project Progress
 
-## Current Phase: SageMaker Training Setup
+## Current Phase: Initial Testing
 
 ### Completed Tasks
 1. Initial model architecture (HybridRoofModel)
@@ -19,29 +19,38 @@
    - Data channel configuration
    - Metrics tracking setup
 
+4. Memory optimization
+   - Reduced image size to 512x512
+   - Reduced batch size to 2
+   - Reduced workers to 2
+   - Limited to 10 samples
+   - Using RID dataset only
+
 ### In Progress
-1. Testing SageMaker training pipeline
-   - Using reduced dataset size for quick iteration
-   - CPU instance for initial testing
-   - Binary mask conversion for RID dataset
+1. Running minimal test configuration
+   - Using CPU instance (ml.m5.xlarge)
+   - Minimal resource usage
+   - Verifying training pipeline
+   - Monitoring memory usage
 
 ### Next Steps
-1. Short term (Testing)
-   - Test with small sample size (20 samples)
-   - Verify data loading and training loop
-   - Check loss calculation and metrics
+1. Short term (Phase 1: Sample Size Scaling)
+   - Increase to 20 samples
+   - Monitor memory and performance
+   - Document baseline metrics
+   - Verify loss convergence
 
-2. Medium term (Scaling)
-   - Move to G5 GPU instance
-   - Scale up to full dataset
-   - Restore original image size (1024x1024)
-   - Increase batch size (16+)
+2. Medium term (Phases 2-4)
+   - Scale batch size
+   - Optimize workers
+   - Add additional datasets
+   - Document each phase
 
-3. Long term (Improvements)
-   - Add proper mask value mapping
-   - Fine-tune model architecture
-   - Optimize training parameters
-   - Add model evaluation metrics
+3. Long term (Phase 5: GPU Migration)
+   - Move to G5 instance
+   - Scale to full dataset
+   - Restore original image size
+   - Enable mixed precision
 
 ### Technical Debt
 1. Mask value mapping
@@ -50,7 +59,7 @@
    - Consider class distribution
 
 2. Memory optimization
-   - Currently using reduced settings
+   - Currently using minimal settings
    - Need to profile memory usage
    - Consider gradient accumulation
 
@@ -61,9 +70,11 @@
 
 ### Documentation
 1. Updated files:
-   - cline_docs/sagemaker_training.md (New)
+   - scaling_strategy.md (New)
+   - activeContext.md
+   - progress.md
+   - src/sagemaker_train.py
    - src/data.py
-   - notebooks/sagemaker_training.ipynb
 
 2. Needed updates:
    - Model architecture documentation
@@ -72,16 +83,16 @@
 
 ## Timeline
 1. Current Sprint (Testing)
-   - Get training working with small dataset
-   - Fix any remaining issues
-   - Document progress
+   - Complete minimal test run
+   - Document baseline metrics
+   - Begin Phase 1 scaling
 
 2. Next Sprint (Scaling)
-   - Move to GPU instance
-   - Scale up to full dataset
-   - Optimize performance
+   - Complete Phases 1-4
+   - Document each phase
+   - Prepare for GPU migration
 
-3. Future Sprint (Refinement)
-   - Improve mask handling
-   - Add advanced features
-   - Fine-tune model
+3. Future Sprint (GPU Migration)
+   - Move to G5 instance
+   - Scale to full dataset
+   - Optimize performance
