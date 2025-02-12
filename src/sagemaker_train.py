@@ -26,6 +26,7 @@ def parse_args():
     parser.add_argument('--learning-rate', type=float, default=0.001)
     parser.add_argument('--num-workers', type=int, default=4)
     parser.add_argument('--num-classes', type=int, default=12)
+    parser.add_argument('--max-samples', type=int, default=None)  # Added max_samples parameter
     
     # Parse args
     args, _ = parser.parse_known_args()
@@ -124,7 +125,8 @@ def train_on_dataset(model, dataset_path, dataset_type, args, device, start_epoc
         dataset_path,
         dataset_type,
         batch_size=args.batch_size,
-        num_workers=args.num_workers
+        num_workers=args.num_workers,
+        max_samples=args.max_samples  # Pass max_samples parameter
     )
     
     # Adjust learning rate based on dataset phase
@@ -181,17 +183,21 @@ def train(args):
     )
     
     try:
-        # Log all input directories
+        # Log all input directories and settings
         logging.info("Input directories:")
         logging.info(f"RID dir: {args.rid_dir}")
         logging.info(f"Roofline dir: {args.roofline_dir}")
         logging.info(f"AIRS dir: {args.airs_dir}")
+        logging.info("\nTraining settings:")
+        logging.info(f"Batch size: {args.batch_size}")
+        logging.info(f"Max samples: {args.max_samples if args.max_samples else 'All'}")
+        logging.info(f"Image size: 512x512 (reduced)")
         
         # Initialize result manager
         result_manager = ResultManager(os.path.join(args.model_dir, 'results'))
         
         # Initialize model and training components
-        logging.info("Initializing model...")
+        logging.info("\nInitializing model...")
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model, criterion = create_model(num_classes=args.num_classes)
         model.criterion = criterion  # Assign criterion to model

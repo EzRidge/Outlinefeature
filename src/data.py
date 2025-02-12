@@ -9,11 +9,12 @@ from PIL import Image
 import scipy.io as sio
 import h5py
 import logging
+import random
 
 class RoofDataset(Dataset):
     """Base dataset class for roof model training."""
     
-    def __init__(self, data_dir, dataset_type, split='train', transform=None):
+    def __init__(self, data_dir, dataset_type, split='train', transform=None, max_samples=None):
         """
         Initialize the dataset.
         
@@ -22,12 +23,14 @@ class RoofDataset(Dataset):
             dataset_type (str): Type of dataset ('rid', 'roofline', or 'airs')
             split (str): Either 'train', 'val', or 'test'
             transform: Optional transforms to apply
+            max_samples (int): Maximum number of samples to load (for testing)
         """
         super().__init__()
         self.data_dir = Path(data_dir)
         self.dataset_type = dataset_type
         self.split = split
         self.transform = transform
+        self.max_samples = max_samples
         
         # Unified class mapping for all datasets
         self.class_mapping = {
@@ -55,6 +58,12 @@ class RoofDataset(Dataset):
             self._load_airs_dataset()
         else:
             raise ValueError(f"Unknown dataset type: {dataset_type}")
+        
+        # Limit number of samples if specified
+        if self.max_samples is not None and len(self.image_files) > self.max_samples:
+            logging.info(f"Limiting dataset to {self.max_samples} samples (from {len(self.image_files)})")
+            # Randomly sample to get a good distribution
+            self.image_files = random.sample(self.image_files, self.max_samples)
         
         print(f"Loaded {len(self.image_files)} images from {dataset_type} dataset ({split} split)")
     
@@ -357,7 +366,7 @@ class RoofDataset(Dataset):
             # Return a dummy sample in case of error
             return self.__getitem__((idx + 1) % len(self))
 
-def create_dataloaders(dataset_path, dataset_type, batch_size=4, num_workers=4):  # Reduced batch size from 16 to 4
+def create_dataloaders(dataset_path, dataset_type, batch_size=4, num_workers=4, max_samples=None):  # Added max_samples parameter
     """
     Create training and validation dataloaders for a specific dataset.
     
@@ -366,16 +375,19 @@ def create_dataloaders(dataset_path, dataset_type, batch_size=4, num_workers=4):
         dataset_type (str): Type of dataset ('rid', 'roofline', or 'airs')
         batch_size (int): Batch size for training
         num_workers (int): Number of worker processes
+        max_samples (int): Maximum number of samples to load (for testing)
         
     Returns:
         train_loader, val_loader: DataLoader objects
     """
     logging.info(f"Creating dataloaders for {dataset_type} dataset")
     logging.info(f"Dataset path: {dataset_path}")
+    if max_samples:
+        logging.info(f"Using max_samples={max_samples} for testing")
     
     # Create datasets
-    train_dataset = RoofDataset(dataset_path, dataset_type, split='train')
-    val_dataset = RoofDataset(dataset_path, dataset_type, split='val')
+    train_dataset = RoofDataset(dataset_path, dataset_type, split='train', max_samples=max_samples)
+    val_dataset = RoofDataset(dataset_path, dataset_type, split='val', max_samples=max_samples)
     
     # Create dataloaders
     train_loader = torch.utils.data.DataLoader(
