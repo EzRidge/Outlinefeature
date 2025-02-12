@@ -27,6 +27,8 @@ def parse_args():
     parser.add_argument('--num-workers', type=int, default=4)
     parser.add_argument('--num-classes', type=int, default=12)
     parser.add_argument('--max-samples', type=int, default=None)  # Added max_samples parameter
+    parser.add_argument('--datasets', type=str, default='rid,roofline,airs',  # Added datasets parameter
+                      help='Comma-separated list of datasets to train on (rid,roofline,airs)')
     
     # Parse args
     args, _ = parser.parse_known_args()
@@ -183,6 +185,10 @@ def train(args):
     )
     
     try:
+        # Parse datasets to train on
+        datasets_to_train = [d.strip().lower() for d in args.datasets.split(',')]
+        logging.info(f"Training on datasets: {datasets_to_train}")
+        
         # Log all input directories and settings
         logging.info("Input directories:")
         logging.info(f"RID dir: {args.rid_dir}")
@@ -192,6 +198,7 @@ def train(args):
         logging.info(f"Batch size: {args.batch_size}")
         logging.info(f"Max samples: {args.max_samples if args.max_samples else 'All'}")
         logging.info(f"Image size: 512x512 (reduced)")
+        logging.info(f"Datasets: {datasets_to_train}")
         
         # Initialize result manager
         result_manager = ResultManager(os.path.join(args.model_dir, 'results'))
@@ -206,46 +213,48 @@ def train(args):
         # Sequential training on each dataset
         current_epoch = 0
         
-        # Training sequence: RID → Roofline → AIRS
-        dataset_sequence = [
-            (args.rid_dir, 'rid'),
-            (args.roofline_dir, 'roofline'),
-            (args.airs_dir, 'airs')
-        ]
+        # Training sequence based on selected datasets
+        dataset_sequence = []
+        if 'rid' in datasets_to_train and args.rid_dir:
+            dataset_sequence.append((args.rid_dir, 'rid'))
+        if 'roofline' in datasets_to_train and args.roofline_dir:
+            dataset_sequence.append((args.roofline_dir, 'roofline'))
+        if 'airs' in datasets_to_train and args.airs_dir:
+            dataset_sequence.append((args.airs_dir, 'airs'))
         
         for dataset_path, dataset_type in dataset_sequence:
-            if dataset_path:
-                current_epoch = train_on_dataset(
-                    model,
-                    dataset_path,
-                    dataset_type,
-                    args,
-                    device,
-                    current_epoch
-                )
-                
-                # Save intermediate model after each dataset
-                checkpoint = {
-                    'epoch': current_epoch,
-                    'model_state_dict': model.state_dict(),
-                    'dataset_type': dataset_type,
-                    'num_classes': args.num_classes
-                }
-                checkpoint_path = os.path.join(args.model_dir, f'model_after_{dataset_type}.pth')
-                torch.save(checkpoint, checkpoint_path)
-                logging.info(f"Saved model after {dataset_type} training")
+            current_epoch = train_on_dataset(
+                model,
+                dataset_path,
+                dataset_type,
+                args,
+                device,
+                current_epoch
+            )
+            
+            # Save intermediate model after each dataset
+            checkpoint = {
+                'epoch': current_epoch,
+                'model_state_dict': model.state_dict(),
+                'dataset_type': dataset_type,
+                'num_classes': args.num_classes
+            }
+            checkpoint_path = os.path.join(args.model_dir, f'model_after_{dataset_type}.pth')
+            torch.save(checkpoint, checkpoint_path)
+            logging.info(f"Saved model after {dataset_type} training")
         
         # Save final model
         final_checkpoint = {
             'epoch': current_epoch,
             'model_state_dict': model.state_dict(),
             'num_classes': args.num_classes,
-            'training_sequence': [d[1] for d in dataset_sequence if d[0]]
+            'training_sequence': [d[1] for d in dataset_sequence]
         }
         torch.save(final_checkpoint, os.path.join(args.model_dir, 'final_model.pth'))
         
         logging.info(f"\nTraining completed!")
         logging.info(f"Model saved to: {args.model_dir}")
+        logging.info(f"Trained on datasets: {[d[1] for d in dataset_sequence]}")
         
     except Exception as e:
         logging.error(f"Training failed: {str(e)}")
