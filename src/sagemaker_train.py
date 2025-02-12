@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 
 # Import our updated components
 from models import create_model
-from data import create_dataloaders
+from datasets import create_dataloaders  # Updated import
 from result_manager import ResultManager
 
 def parse_args():
@@ -18,17 +18,16 @@ def parse_args():
     parser.add_argument('--model-dir', type=str, default=os.environ.get('SM_MODEL_DIR', '/opt/ml/model'))
     parser.add_argument('--rid-dir', type=str, default=os.environ.get('SM_CHANNEL_RID', None))
     parser.add_argument('--roofline-dir', type=str, default=os.environ.get('SM_CHANNEL_ROOFLINE', None))
-    parser.add_argument('--airs-dir', type=str, default=os.environ.get('SM_CHANNEL_AIRS', None))
     
     # Training hyperparameters
-    parser.add_argument('--epochs-per-dataset', type=int, default=10)
+    parser.add_argument('--epochs-per-dataset', type=int, default=20)
     parser.add_argument('--batch-size', type=int, default=16)
     parser.add_argument('--learning-rate', type=float, default=0.001)
     parser.add_argument('--num-workers', type=int, default=4)
     parser.add_argument('--num-classes', type=int, default=12)
-    parser.add_argument('--max-samples', type=int, default=None)  # Added max_samples parameter
-    parser.add_argument('--datasets', type=str, default='rid,roofline,airs',  # Added datasets parameter
-                      help='Comma-separated list of datasets to train on (rid,roofline,airs)')
+    parser.add_argument('--max-samples', type=int, default=None)
+    parser.add_argument('--datasets', type=str, default='rid,roofline',
+                      help='Comma-separated list of datasets to train on (rid,roofline)')
     
     # Parse args
     args, _ = parser.parse_known_args()
@@ -128,14 +127,13 @@ def train_on_dataset(model, dataset_path, dataset_type, args, device, start_epoc
         dataset_type,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        max_samples=args.max_samples  # Pass max_samples parameter
+        max_samples=args.max_samples
     )
     
     # Adjust learning rate based on dataset phase
     lr_multiplier = {
-        'rid': 1.0,      # Base learning rate for initial training
-        'roofline': 0.1, # Lower learning rate for fine-tuning on lines
-        'airs': 0.05     # Even lower for final outline tuning
+        'rid': 1.0,       # Base learning rate for segmentation
+        'roofline': 0.5,  # Lower rate for line detection and depth
     }
     
     # Initialize optimizer with adjusted learning rate
@@ -193,11 +191,10 @@ def train(args):
         logging.info("Input directories:")
         logging.info(f"RID dir: {args.rid_dir}")
         logging.info(f"Roofline dir: {args.roofline_dir}")
-        logging.info(f"AIRS dir: {args.airs_dir}")
         logging.info("\nTraining settings:")
         logging.info(f"Batch size: {args.batch_size}")
         logging.info(f"Max samples: {args.max_samples if args.max_samples else 'All'}")
-        logging.info(f"Image size: 512x512 (reduced)")
+        logging.info(f"Image size: 512x512")
         logging.info(f"Datasets: {datasets_to_train}")
         
         # Initialize result manager
@@ -219,8 +216,6 @@ def train(args):
             dataset_sequence.append((args.rid_dir, 'rid'))
         if 'roofline' in datasets_to_train and args.roofline_dir:
             dataset_sequence.append((args.roofline_dir, 'roofline'))
-        if 'airs' in datasets_to_train and args.airs_dir:
-            dataset_sequence.append((args.airs_dir, 'airs'))
         
         for dataset_path, dataset_type in dataset_sequence:
             current_epoch = train_on_dataset(
