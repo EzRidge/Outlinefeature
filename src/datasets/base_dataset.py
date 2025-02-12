@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 from pathlib import Path
 import logging
+import random  # Added missing import
 
 class BaseRoofDataset(Dataset):
     """Base class for all roof datasets."""
