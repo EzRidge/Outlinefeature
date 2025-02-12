@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 
 # Import our updated components
 from models import create_model
-from datasets import create_dataloaders  # Updated import
+from datasets import create_dataloaders
 from result_manager import ResultManager
 
 def parse_args():
@@ -21,13 +21,16 @@ def parse_args():
     
     # Training hyperparameters
     parser.add_argument('--epochs-per-dataset', type=int, default=20)
-    parser.add_argument('--batch-size', type=int, default=16)
+    parser.add_argument('--batch-size', type=int, default=4)
+    parser.add_argument('--gradient-accumulation-steps', type=int, default=4)
     parser.add_argument('--learning-rate', type=float, default=0.001)
     parser.add_argument('--num-workers', type=int, default=4)
     parser.add_argument('--num-classes', type=int, default=12)
     parser.add_argument('--max-samples', type=int, default=None)
     parser.add_argument('--datasets', type=str, default='rid,roofline',
                       help='Comma-separated list of datasets to train on (rid,roofline)')
+    parser.add_argument('--test-run', type=bool, default=False,
+                      help='If True, only run a few iterations to test setup')
     
     # Parse args
     args, _ = parser.parse_known_args()
@@ -52,16 +55,22 @@ def list_directory_contents(path, indent=""):
     
     return result
 
-def train_epoch(model, train_loader, optimizer, device, dataset_type):
-    """Train for one epoch"""
+def train_epoch(model, train_loader, optimizer, device, dataset_type, args):
+    """Train for one epoch with gradient accumulation"""
     model.train()
     total_loss = 0
     num_batches = len(train_loader)
+    optimizer.zero_grad()  # Zero gradients at start of epoch
+    
+    # For test runs, only process a few batches
+    max_batches = 5 if args.test_run else num_batches
     
     for batch_idx, (images, targets) in enumerate(train_loader):
+        if batch_idx >= max_batches:
+            break
+            
         # Move data to device
         images = images.to(device)
-        # Only move tensor values to device
         device_targets = {
             k: v.to(device) if isinstance(v, torch.Tensor) else v
             for k, v in targets.items()
@@ -71,33 +80,49 @@ def train_epoch(model, train_loader, optimizer, device, dataset_type):
         predictions = model(images)
         loss, losses_dict = model.criterion(predictions, device_targets)
         
-        # Backward pass
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        # Scale loss for gradient accumulation
+        loss = loss / args.gradient_accumulation_steps
         
-        # Update total loss
-        total_loss += loss.item()
+        # Backward pass
+        loss.backward()
+        
+        # Update weights if we've accumulated enough gradients
+        if (batch_idx + 1) % args.gradient_accumulation_steps == 0:
+            optimizer.step()
+            optimizer.zero_grad()
+        
+        # Update total loss (use unscaled loss for logging)
+        total_loss += loss.item() * args.gradient_accumulation_steps
         
         # Log progress
         if (batch_idx + 1) % 10 == 0:
-            logging.info(f'Train Batch [{batch_idx + 1}/{num_batches}] - Loss: {loss.item():.4f}')
+            logging.info(f'Train Batch [{batch_idx + 1}/{num_batches}] - Loss: {loss.item() * args.gradient_accumulation_steps:.4f}')
             for k, v in losses_dict.items():
                 logging.info(f'  {k}: {v.item():.4f}')
     
-    return total_loss / num_batches
+    # Handle any remaining gradients
+    if (batch_idx + 1) % args.gradient_accumulation_steps != 0:
+        optimizer.step()
+        optimizer.zero_grad()
+    
+    return total_loss / max_batches
 
-def validate(model, val_loader, device, dataset_type):
+def validate(model, val_loader, device, dataset_type, args):
     """Validate the model"""
     model.eval()
     total_loss = 0
     num_batches = len(val_loader)
     
+    # For test runs, only process a few batches
+    max_batches = 5 if args.test_run else num_batches
+    
     with torch.no_grad():
-        for images, targets in val_loader:
+        for batch_idx, (images, targets) in enumerate(val_loader):
+            if batch_idx >= max_batches:
+                break
+                
             # Move data to device
             images = images.to(device)
-            # Only move tensor values to device
             device_targets = {
                 k: v.to(device) if isinstance(v, torch.Tensor) else v
                 for k, v in targets.items()
@@ -110,7 +135,27 @@ def validate(model, val_loader, device, dataset_type):
             # Update total loss
             total_loss += loss.item()
     
-    return total_loss / num_batches
+    return total_loss / max_batches
+
+def save_checkpoint(model, optimizer, epoch, dataset_type, val_loss, checkpoint_dir):
+    """Save a checkpoint with all necessary info for resuming training"""
+    checkpoint = {
+        'epoch': epoch + 1,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'val_loss': val_loss,
+        'dataset_type': dataset_type
+    }
+    
+    checkpoint_path = os.path.join(checkpoint_dir, f'checkpoint_{dataset_type}_epoch_{epoch+1}.pth')
+    torch.save(checkpoint, checkpoint_path)
+    logging.info(f"Saved checkpoint: {checkpoint_path}")
+    
+    # If this is the best validation loss, save as best model
+    best_model_path = os.path.join(checkpoint_dir, f'best_model_{dataset_type}.pth')
+    if not os.path.exists(best_model_path) or val_loss < checkpoint.get('val_loss', float('inf')):
+        torch.save(checkpoint, best_model_path)
+        logging.info(f"Saved best model for {dataset_type}")
 
 def train_on_dataset(model, dataset_path, dataset_type, args, device, start_epoch=0):
     """Train model on a specific dataset"""
@@ -130,47 +175,32 @@ def train_on_dataset(model, dataset_path, dataset_type, args, device, start_epoc
         max_samples=args.max_samples
     )
     
-    # Adjust learning rate based on dataset phase
-    lr_multiplier = {
-        'rid': 1.0,       # Base learning rate for segmentation
-        'roofline': 0.5,  # Lower rate for line detection and depth
-    }
-    
     # Initialize optimizer with adjusted learning rate
     optimizer = torch.optim.Adam(
         model.parameters(),
-        lr=args.learning_rate * lr_multiplier[dataset_type]
+        lr=args.learning_rate
     )
     
     # Training loop for this dataset
     best_val_loss = float('inf')
-    epochs = args.epochs_per_dataset
+    epochs = 2 if args.test_run else args.epochs_per_dataset
     
     for epoch in range(epochs):
         current_epoch = start_epoch + epoch
         logging.info(f"\nEpoch [{epoch + 1}/{epochs}] ({dataset_type})")
         
         # Train and validate
-        train_loss = train_epoch(model, train_loader, optimizer, device, dataset_type)
-        val_loss = validate(model, val_loader, device, dataset_type)
+        train_loss = train_epoch(model, train_loader, optimizer, device, dataset_type, args)
+        val_loss = validate(model, val_loader, device, dataset_type, args)
         
         logging.info(f"Training Loss: {train_loss:.4f}")
         logging.info(f"Validation Loss: {val_loss:.4f}")
         
-        # Save best model for this dataset
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            checkpoint = {
-                'epoch': current_epoch + 1,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'val_loss': val_loss,
-                'train_loss': train_loss,
-                'dataset_type': dataset_type
-            }
-            checkpoint_path = os.path.join(args.model_dir, f'best_model_{dataset_type}.pth')
-            torch.save(checkpoint, checkpoint_path)
-            logging.info(f"Saved best model for {dataset_type}")
+        # Save checkpoint
+        save_checkpoint(
+            model, optimizer, current_epoch, dataset_type, 
+            val_loss, os.path.join(args.model_dir, 'checkpoints')
+        )
     
     return current_epoch + 1
 
@@ -193,9 +223,15 @@ def train(args):
         logging.info(f"Roofline dir: {args.roofline_dir}")
         logging.info("\nTraining settings:")
         logging.info(f"Batch size: {args.batch_size}")
+        logging.info(f"Gradient accumulation steps: {args.gradient_accumulation_steps}")
+        logging.info(f"Effective batch size: {args.batch_size * args.gradient_accumulation_steps}")
+        logging.info(f"Test run: {args.test_run}")
         logging.info(f"Max samples: {args.max_samples if args.max_samples else 'All'}")
         logging.info(f"Image size: 512x512")
         logging.info(f"Datasets: {datasets_to_train}")
+        
+        # Create checkpoint directory
+        os.makedirs(os.path.join(args.model_dir, 'checkpoints'), exist_ok=True)
         
         # Initialize result manager
         result_manager = ResultManager(os.path.join(args.model_dir, 'results'))
