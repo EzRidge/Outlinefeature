@@ -161,7 +161,9 @@ class RoofDataset(Dataset):
             example_names = list(image_names)[:5]
             for name in example_names:
                 logging.error(f"  {name}")
-        
+            
+            raise RuntimeError("No valid image/mask pairs found. Check paths and file structure.")
+    
     def _load_roofline_dataset(self):
         """Load Roofline dataset from .mat file."""
         mat_file = next(self.data_dir.glob('*.mat'))
@@ -363,10 +365,9 @@ class RoofDataset(Dataset):
             
         except Exception as e:
             logging.error(f"Error loading sample {img_path}: {str(e)}")
-            # Return a dummy sample in case of error
-            return self.__getitem__((idx + 1) % len(self))
-
-def create_dataloaders(dataset_path, dataset_type, batch_size=4, num_workers=4, max_samples=None):  # Added max_samples parameter
+            raise  # Raise the error instead of returning a dummy sample
+        
+def create_dataloaders(dataset_path, dataset_type, batch_size=4, num_workers=4, max_samples=None):
     """
     Create training and validation dataloaders for a specific dataset.
     
